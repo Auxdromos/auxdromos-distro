@@ -63,7 +63,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - keycloak-data:/var/lib/postgresql/data
     networks:
       - auxdromos-network
 
@@ -108,12 +108,21 @@ services:
     networks:
       - auxdromos-network
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      rdbms-app:
+        condition: service_healthy
 
   postgres:
+    env_file:
+      - ./.env
     build:
-      context: ./../..
+      context: ../../../auxdromos-distro
       dockerfile: Dockerfile.postgres
+      args:
+        AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+        AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+        AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
     container_name: postgres-db
     ports:
       - "5433:5432"
@@ -156,6 +165,11 @@ services:
       - postgres
     networks:
       - auxdromos-network
+    healthcheck:
+      test: ["CMD-SHELL", "sh /app/healthcheck-rdbms-app.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 networks:
   auxdromos-network:
@@ -163,3 +177,4 @@ networks:
 
 volumes:
   postgres-data:
+  keycloak-data:
