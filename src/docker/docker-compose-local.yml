@@ -103,26 +103,14 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     command: >
-      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/backend/backend-AWS.jar /app/backend-aws.jar &&
-             java -jar /app/backend-aws.jar"
+      sh -c "until psql -h postgres -U postgres -d auxdromos -c 'SELECT 1 FROM auxdromos.municipalities LIMIT 1;' 2>/dev/null; do echo 'Waiting for tables...'; sleep 5; done &&
+      aws s3 cp s3://auxdromos-artifacts-unique/backend/backend-AWS.jar /app/backend-aws.jar &&
+      java -jar /app/backend-aws.jar"
     networks:
       - auxdromos-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rdbms-app:
-        condition: service_healthy
 
   postgres:
-    env_file:
-      - ./.env
-    build:
-      context: ../../../auxdromos-distro
-      dockerfile: Dockerfile.postgres
-      args:
-        AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-        AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-        AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+    image: postgres:17.2
     container_name: postgres-db
     ports:
       - "5433:5432"
@@ -165,11 +153,6 @@ services:
       - postgres
     networks:
       - auxdromos-network
-    healthcheck:
-      test: ["CMD-SHELL", "sh /app/healthcheck-rdbms-app.sh"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
 networks:
   auxdromos-network:

@@ -1,9 +1,0 @@
-FROM postgres:17.2
-
-RUN apt-get update && apt-get install -y awscli
-
-# Copia lo script di healthcheck nel container
-COPY ./src/docker/script/healthcheck-rdbms-app.sh /app/healthcheck-rdbms-app.sh
-RUN chmod +x /app/healthcheck-rdbms-app.sh
-
-ENTRYPOINT ["sh", "-c", "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION aws s3 cp s3://auxdromos-artifacts-unique/rdbms/init_db.sql /docker-entrypoint-initdb.d/init_db.sql && docker-entrypoint.sh postgres"]
