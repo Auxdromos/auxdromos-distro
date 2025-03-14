@@ -37,6 +37,7 @@ artifact_upload_s3:
   dependencies:
     - build
   script:
+    - set -a && . .env && set +a
     - set -x
     - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
     - echo "Versione rilevata - $VERSION - Modulo $MODULE_NAME - $MODULE_NAME-$VERSION.jar"
