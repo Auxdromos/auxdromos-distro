@@ -39,8 +39,8 @@ artifact_upload_s3:
   script:
     - set -x
     - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
-    - echo "Versione rilevata - $VERSION - Modulo $MODULE_NAME"
-    - aws s3 cp target/$MODULE_NAME-$VERSION-AWS.jar s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
+    - echo "Versione rilevata - $VERSION - Modulo $MODULE_NAME - $MODULE_NAME-$VERSION.jar"
+    - aws s3 cp target/$MODULE_NAME-$VERSION.jar s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
     - exit 0
   only:
     - develop
