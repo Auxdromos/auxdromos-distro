@@ -4,15 +4,15 @@ stages:
   - build
   - test
   - artifact_upload_s3
+  - check_version
   - deploy_sit
 
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
 
 variables:
-  MODULE_NAME: "$MODULE_NAME"
-  AWS_DEFAULT_REGION: "$AWS_DEFAULT_REGION"
-  S3_BUCKET_NAME: "$S3_BUCKET_NAME"
+  S3_BUCKET_NAME: "auxdromos-artifacts-unique"
+  AWS_DEFAULT_REGION: "us-east-1"
 
 build:
   stage: build
@@ -37,16 +37,69 @@ artifact_upload_s3:
   dependencies:
     - build
   script:
-    - set -a && . .env && set +a
     - set -x
     - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
     - echo "Versione rilevata - $VERSION - Modulo $MODULE_NAME - $MODULE_NAME-$VERSION.jar"
     - aws s3 cp target/$MODULE_NAME-$VERSION.jar s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
+    - |
+      files_to_delete=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | head -n -5 | awk '{print $4}')
+      if [ -n "$files_to_delete" ]; then
+        for file in $files_to_delete; do
+          echo "Eliminazione del file: $file"
+          aws s3 rm s3://$S3_BUCKET_NAME/$MODULE_NAME/$file --region $AWS_DEFAULT_REGION
+        done
+      else
+        echo "Meno di 5 versioni presenti, nessun file eliminato"
+      fi
     - exit 0
   only:
     - develop
   environment:
     name: sit
+
+check_version:
+  stage: check_version
+  image: amazon/aws-cli:latest
+  only:
+    - main
+  script:
+    - set -x
+    # Estrae la nuova versione dal file pom.xml
+    - NEW_VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+    - echo "Nuova versione rilevata: $NEW_VERSION"
+    # Recupera la versione attualmente presente su S3 (se esiste)
+    # Supponiamo che il nome del file sia nel formato MODULE_NAME-VERSION.jar
+    - CURRENT_FILE=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | awk '{print $4}' | sort -V | tail -n1)
+    - |
+      if [ -n "$CURRENT_FILE" ]; then
+      CURRENT_VERSION=$(echo "$CURRENT_FILE" | sed "s/$MODULE_NAME-//; s/\.jar//");
+      echo "Versione attualmente presente su S3: $CURRENT_VERSION";
+      else
+      echo "Nessuna versione presente su S3.";
+      fi
+    # Se esiste una versione precedente, verifica che NEW_VERSION sia successiva
+    - |
+      if [ -n "$CURRENT_FILE" ]; then
+        if [ "$CURRENT_VERSION" = "$NEW_VERSION" ]; then
+          echo "Errore: la nuova versione ($NEW_VERSION) è la stessa di quella presente ($CURRENT_VERSION)."
+          exit 1
+        fi
+        # Usa sort per determinare l'ordine delle versioni (sort -V ordina in modo 'semantico')
+        SORTED=$(printf '%s\n' "$CURRENT_VERSION" "$NEW_VERSION" | sort -V | head -n1)
+        if [ "$SORTED" = "$NEW_VERSION" ]; then
+          echo "Errore: la nuova versione ($NEW_VERSION) non è successiva a quella presente ($CURRENT_VERSION)."
+          exit 1
+        fi
+      fi
+    # Verifica che il file con la nuova versione non sia già presente su S3
+    - aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/$MODULE_NAME-$NEW_VERSION.jar --region $AWS_DEFAULT_REGION
+    - | 
+      if [ $? -eq 0 ]; then
+      echo "Errore: la versione $NEW_VERSION è già presente su S3.";
+      exit 1;
+      else
+      echo "La versione $NEW_VERSION non è presente su S3, procedo.";
+      fi
 
 deploy_sit:
   stage: deploy_sit

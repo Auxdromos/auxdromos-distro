@@ -19,6 +19,6 @@ deploy_develop:
     # Esegui il deploy
     - ssh $EC2_USER@$EC2_HOST 'bash /tmp/deploy.sh'
   only:
-    - develop
+    - main
   environment:
-    name: develop
+    name: sit
