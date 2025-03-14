@@ -21,7 +21,7 @@ build:
     - mvn clean package -Paws -DskipTests
   artifacts:
     paths:
-      - target
+      - target/*.jar
 
 test:
   stage: test
@@ -40,7 +40,7 @@ artifact_upload_s3:
     - set -x
     - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
     - echo "Versione rilevata - $VERSION - Modulo $MODULE_NAME - $MODULE_NAME-$VERSION.jar"
-    - aws s3 cp target/$MODULE_NAME-$VERSION.jar s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
+    - aws s3 cp $MODULE_NAME-$VERSION.jar s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
     - |
       files_to_delete=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | head -n -5 | awk '{print $4}')
       if [ -n "$files_to_delete" ]; then
