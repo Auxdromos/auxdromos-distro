@@ -66,33 +66,11 @@ check_version:
     - set -x
     - NEW_VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3) && echo "Nuova versione rilevata: $NEW_VERSION"
     - CURRENT_FILE=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | awk '{print $4}' | sort -V | tail -n1)
-    - |
-      if [ -n "$CURRENT_FILE" ]; then
-        CURRENT_VERSION=$(echo "$CURRENT_FILE" | sed "s/$MODULE_NAME-//; s/\.jar//")
-        echo "Versione attualmente presente su S3: $CURRENT_VERSION"
-      else
-        echo "Nessuna versione presente su S3."
-      fi
-    - |
-      if [ -n "$CURRENT_FILE" ]; then
-        if [ "$CURRENT_VERSION" = "$NEW_VERSION" ]; then
-          echo "Errore: la nuova versione ($NEW_VERSION) è la stessa di quella presente ($CURRENT_VERSION)."
-          exit 1
-        fi
-        SORTED=$(printf '%s\n' "$CURRENT_VERSION" "$NEW_VERSION" | sort -V | head -n1)
-        if [ "$SORTED" = "$NEW_VERSION" ]; then
-          echo "Errore: la nuova versione ($NEW_VERSION) non è successiva a quella presente ($CURRENT_VERSION)."
-          exit 1
-        fi
-      fi
+    - 'if [ -n "$CURRENT_FILE" ]; then CURRENT_VERSION=$(echo "$CURRENT_FILE" | sed "s/$MODULE_NAME-//; s/\.jar//"); echo "Versione attualmente presente su S3: $CURRENT_VERSION"; else echo "Nessuna versione presente su S3."; fi'
+    - 'if [ -n "$CURRENT_FILE" ]; then if [ "$CURRENT_VERSION" = "$NEW_VERSION" ]; then echo "Errore: la nuova versione ($NEW_VERSION) è la stessa di quella presente ($CURRENT_VERSION)"; exit 1; fi; SORTED=$(printf ''%s\n'' "$CURRENT_VERSION" "$NEW_VERSION" | sort -V | head -n1); if [ "$SORTED" = "$NEW_VERSION" ]; then echo "Errore: la nuova versione ($NEW_VERSION) non è successiva a quella presente ($CURRENT_VERSION)"; exit 1; fi; fi'
     - aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/$MODULE_NAME-$NEW_VERSION.jar --region $AWS_DEFAULT_REGION
-    - |
-      if [ $? -eq 0 ]; then
-        echo "Errore: la versione $NEW_VERSION è già presente su S3."
-        exit 1
-      else
-        echo "La versione $NEW_VERSION non è presente su S3, procedo."
-      fi
+    - 'if [ $? -eq 0 ]; then echo "Errore: la versione $NEW_VERSION è già presente su S3."; exit 1; else echo "La versione $NEW_VERSION non è presente su S3, procedo."; fi'
+
 
 deploy_sit:
   stage: deploy_sit
