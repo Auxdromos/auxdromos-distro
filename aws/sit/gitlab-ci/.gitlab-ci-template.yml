@@ -40,16 +40,12 @@ artifact_upload_s3:
     - set -x
     - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
     - echo "Versione rilevata - $VERSION - Modulo $MODULE_NAME - $MODULE_NAME-$VERSION.jar"
-    - echo "Contenuto directory.."
-    # Mostra il contenuto della directory per capire dove si trova il jar
-    - ls -la
-    - echo "Controllo.."
-    # Se esiste la cartella target ed il file è al suo interno, lo sposto nella root
-    - if [ -d "target" ] && [ -f "target/$MODULE_NAME-$VERSION.jar" ]; then echo "Trovato in target/, sposto il jar nella root"; mv target/$MODULE_NAME-$VERSION.jar .; fi
-    - echo "Contenuto directory.."
-    - ls -la
-    # Ora eseguo il comando aws facendo riferimento al jar nella root
-    - aws s3 cp $MODULE_NAME-$VERSION.jar s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
+    - echo "Contenuto della directory target:"
+    - ls -la target
+    # Cerca il file jar usando un pattern che includa eventuali suffissi
+    - JAR_FILE=$(ls target/$MODULE_NAME-$VERSION*.jar)
+    - echo "File jar individuato $JAR_FILE"
+    - aws s3 cp $JAR_FILE s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
     - |
       files_to_delete=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | head -n -5 | awk '{print $4}')
       if [ -n "$files_to_delete" ]; then
