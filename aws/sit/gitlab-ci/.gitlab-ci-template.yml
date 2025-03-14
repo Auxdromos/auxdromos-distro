@@ -21,7 +21,7 @@ build:
     - mvn clean package -Paws -DskipTests
   artifacts:
     paths:
-      - target/*.jar
+      - target
 
 test:
   stage: test
