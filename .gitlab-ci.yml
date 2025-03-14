@@ -1,0 +1,24 @@
+image: alpine:latest
+
+stages:
+  - deploy_develop
+
+before_script:
+  - apk update && apk add --no-cache openssh-client bash
+  - mkdir -p ~/.ssh
+  # Configura la chiave privata per SSH
+  - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+  - chmod 600 ~/.ssh/id_rsa
+  - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+
+deploy_develop:
+  stage: deploy_develop
+  script:
+    # Copia lo script deploy su EC2
+    - scp scripts/deploy.sh $EC2_USER@$EC2_HOST:/tmp/deploy.sh
+    # Esegui il deploy
+    - ssh $EC2_USER@$EC2_HOST 'bash /tmp/deploy.sh'
+  only:
+    - develop
+  environment:
+    name: develop

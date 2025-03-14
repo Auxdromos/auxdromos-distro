@@ -1,0 +1,70 @@
+image: maven:3.9.9-amazoncorretto-17
+
+stages:
+  - build
+  - test
+  - artifact_upload_s3
+  - deploy_sit
+
+include:
+  - template: Security/Dependency-Scanning.gitlab-ci.yml
+
+variables:
+  MODULE_NAME: "$MODULE_NAME"
+  AWS_DEFAULT_REGION: "$AWS_DEFAULT_REGION"
+  S3_BUCKET_NAME: "$S3_BUCKET_NAME"
+
+build:
+  stage: build
+  script:
+    - echo "Build del modulo $MODULE_NAME..."
+    - mvn clean package -Paws -DskipTests
+  artifacts:
+    paths:
+      - target/*.jar
+
+test:
+  stage: test
+  script:
+    - echo "Test del modulo $MODULE_NAME..."
+    - mvn test
+
+artifact_upload_s3:
+  stage: artifact_upload_s3
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  dependencies:
+    - build
+  script:
+    - set -x
+    - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+    - echo "Versione rilevata - $VERSION"
+    - aws s3 cp target/$MODULE_NAME-$VERSION-AWS.jar s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
+    - exit 0
+  only:
+    - develop
+  environment:
+    name: sit
+
+deploy_sit:
+  stage: deploy_sit
+  image: alpine:latest
+  dependencies:
+    - artifact_upload_s3
+  before_script:
+    - apk update && apk add --no-cache openssh-client bash docker-compose
+    - mkdir -p ~/.ssh
+    # Imposta la chiave privata per la connessione SSH
+    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+  script:
+    # Copia lo script deploy.sh sull'istanza EC2
+    - scp deploy.sh $EC2_USER@$EC2_HOST:/tmp/deploy.sh
+    # Esegui lo script in remoto sull'istanza EC2
+    - ssh $EC2_USER@$EC2_HOST 'bash /tmp/deploy.sh'
+  only:
+    - main
+  environment:
+    name: sit

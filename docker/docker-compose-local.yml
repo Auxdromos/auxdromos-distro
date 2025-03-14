@@ -1,0 +1,179 @@
+#Valido per una struttura cosi
+#  AuxDromos/
+#    ├─ auxdromos-distro
+#    ├─ auxdromos-backend
+#    ├─ auxdromos-rdbms
+#    ├─ auxdromos-gateway
+#    ├─ auxdromos-idp
+#    └─ auxdromos-config
+
+# Questo crea tutto l'ambiente di sviluppo in locale compilando i jar in locale
+
+services:
+  gateway:
+    build:
+      context: ../../auxdromos-gateway
+      dockerfile: ../../auxdromos-gateway/Dockerfile
+    container_name: auxdromos-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    command: >
+      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/gateway/gateway-AWS.jar /app/gateway-aws.jar &&
+             java -jar /app/gateway-aws.jar"
+    networks:
+      - auxdromos-network
+    depends_on:
+      - backend
+      - keycloak-app
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    container_name: keycloak-auxdromos
+    ports:
+      - "8082:8080"
+    environment:
+      DB_VENDOR: postgres
+      DB_ADDR: keycloak-db
+      DB_DATABASE: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    command: start-dev
+    depends_on:
+      - keycloak-db
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - auxdromos-network
+
+  keycloak-db:
+    image: postgres:14
+    container_name: keycloak-db-auxdromos
+    environment:
+      PORT: 5433
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - keycloak-data:/var/lib/postgresql/data
+    networks:
+      - auxdromos-network
+
+  keycloak-app:
+    build:
+      context: ../../auxdromos-idp
+      dockerfile: ../../auxdromos-idp/Dockerfile
+      args:
+        PROFILE: dev
+    container_name: auxdromos-idp
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    command: >
+      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/idp/idp-AWS.jar /app/idp-aws.jar &&
+             java -jar /app/idp-aws.jar"
+    networks:
+      - auxdromos-network
+    depends_on:
+      - keycloak-db
+
+  backend:
+    build:
+      context: ../../auxdromos-backend
+      dockerfile: ../../auxdromos-backend/Dockerfile
+    container_name: auxdromos-backend
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/auxdromos?currentSchema=auxdromos&options=-c%20search_path%3Dauxdromos
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: BbzcaI5HKm5wr3
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    command: >
+      sh -c "until psql -h postgres -U postgres -d auxdromos -c 'SELECT 1 FROM auxdromos.municipalities LIMIT 1;' 2>/dev/null; do echo 'Waiting for tables...'; sleep 5; done &&
+      aws s3 cp s3://auxdromos-artifacts-unique/backend/backend-AWS.jar /app/backend-aws.jar &&
+      java -jar /app/backend-aws.jar"
+    networks:
+      - auxdromos-network
+
+  postgres:
+    image: postgres:17.2
+    container_name: postgres-db
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: BbzcaI5HKm5wr3
+      POSTGRES_DB: auxdromos
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - auxdromos-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auxdromos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rdbms-app:
+    build:
+      context: ../../auxdromos-rdbms
+      dockerfile: ../../auxdromos-rdbms/Dockerfile
+      args:
+        PROFILE: dev
+    container_name: auxdromos-rdbms-app
+    ports:
+      - "8088:8088"
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    command: >
+      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/rdbms/rdbms-AWS.jar /app/rdbms-aws.jar &&
+             java -jar /app/rdbms-aws.jar"
+    depends_on:
+      - postgres
+    networks:
+      - auxdromos-network
+
+  config-server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        PROFILE: dev
+    container_name: config-server
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+    ports:
+      - "8888:8888"
+    networks:
+      - auxdromos-network
+networks:
+  auxdromos-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  keycloak-data:

@@ -1,16 +1,9 @@
-#Valido per una struttura cosi
-#  AuxDromos/
-#    ├─ auxdromos-distro
-#    ├─ auxdromos-backend
-#    ├─ auxdromos-rdbms
-#    ├─ auxdromos-gateway
-#    └─ auxdromos-idp
+# Questo crea tutto l'ambiente di sviluppo in locale recupera i jar da s3
+# creando anche i DB e Keycloak
 
 services:
   gateway:
-    build:
-      context: ../../../auxdromos-gateway
-      dockerfile: Dockerfile
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:latest
     container_name: auxdromos-gateway
     ports:
       - "8080:8080"
@@ -20,9 +13,6 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-    command: >
-      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/gateway/gateway-AWS.jar /app/gateway-aws.jar &&
-             java -jar /app/gateway-aws.jar"
     networks:
       - auxdromos-network
     depends_on:
@@ -68,11 +58,7 @@ services:
       - auxdromos-network
 
   keycloak-app:
-    build:
-      context: ../../../auxdromos-idp
-      dockerfile: Dockerfile
-      args:
-        PROFILE: dev
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:latest
     container_name: auxdromos-idp
     environment:
       SPRING_PROFILES_ACTIVE: "dev"
@@ -80,18 +66,13 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-    command: >
-      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/idp/idp-AWS.jar /app/idp-aws.jar &&
-             java -jar /app/idp-aws.jar"
     networks:
       - auxdromos-network
     depends_on:
       - keycloak-db
 
   backend:
-    build:
-      context: ../../../auxdromos-backend
-      dockerfile: Dockerfile
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:latest
     container_name: auxdromos-backend
     environment:
       SPRING_PROFILES_ACTIVE: "dev"
@@ -102,12 +83,10 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-    command: >
-      sh -c "until psql -h postgres -U postgres -d auxdromos -c 'SELECT 1 FROM auxdromos.municipalities LIMIT 1;' 2>/dev/null; do echo 'Waiting for tables...'; sleep 5; done &&
-      aws s3 cp s3://auxdromos-artifacts-unique/backend/backend-AWS.jar /app/backend-aws.jar &&
-      java -jar /app/backend-aws.jar"
     networks:
       - auxdromos-network
+    depends_on:
+      - postgres
 
   postgres:
     image: postgres:17.2
@@ -131,15 +110,11 @@ services:
       timeout: 5s
       retries: 5
 
-  rdbms-app:
+  config-server:
     build:
-      context: ../../../auxdromos-rdbms
+      context: ../
       dockerfile: Dockerfile
-      args:
-        PROFILE: dev
-    container_name: rdbms-app
-    ports:
-      - "8088:8088"
+    container_name: auxdromos-config-server
     environment:
       SPRING_PROFILES_ACTIVE: "dev"
       S3_BUCKET_NAME: ${S3_BUCKET_NAME}
@@ -147,10 +122,12 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     command: >
-      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/rdbms/rdbms-AWS.jar /app/rdbms-aws.jar &&
-             java -jar /app/rdbms-aws.jar"
+      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/config-server/config-server-AWS.jar /app/config-server-aws.jar &&
+             java -jar /app/config-server-aws.jar"
     depends_on:
-      - postgres
+      - gateway
+      - backend
+      - keycloak
     networks:
       - auxdromos-network
 

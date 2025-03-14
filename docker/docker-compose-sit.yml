@@ -1,0 +1,71 @@
+# Questo crea tutto l'ambiente di sviluppo in locale recupera i jar da s3
+# ma puntando ai DB e Keycloak in AWS
+
+services:
+  gateway:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:latest
+    container_name: auxdromos-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: "sit"
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # Database and Keycloak configuration pointing to AWS resources
+      SPRING_DATASOURCE_URL: ${AWS_RDS_URL}
+      SPRING_DATASOURCE_USERNAME: ${AWS_RDS_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${AWS_RDS_PASSWORD}
+      KEYCLOAK_URL: ${AWS_KEYCLOAK_URL}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+    networks:
+      - auxdromos-network
+    depends_on:
+      - backend
+      - keycloak-app
+
+  keycloak-app:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:latest
+    container_name: auxdromos-idp
+    environment:
+      SPRING_PROFILES_ACTIVE: "sit"
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # Keycloak configuration pointing to AWS
+      KEYCLOAK_URL: ${AWS_KEYCLOAK_URL}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+    networks:
+      - auxdromos-network
+
+  backend:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:latest
+    container_name: auxdromos-backend
+    environment:
+      SPRING_PROFILES_ACTIVE: "sit"
+      # AWS RDS Database configuration
+      SPRING_DATASOURCE_URL: ${AWS_RDS_URL}
+      SPRING_DATASOURCE_USERNAME: ${AWS_RDS_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${AWS_RDS_PASSWORD}
+      # AWS S3 configuration
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # Keycloak configuration
+      KEYCLOAK_URL: ${AWS_KEYCLOAK_URL}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_RESOURCE: ${KEYCLOAK_RESOURCE}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+    networks:
+      - auxdromos-network
+
+networks:
+  auxdromos-network:
+    driver: bridge
