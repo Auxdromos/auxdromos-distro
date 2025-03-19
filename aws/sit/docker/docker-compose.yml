@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  ${MODULO}:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}
+    container_name: auxdromos-${MODULO}
+    env_file:
+      - ./env/${MODULO}.env
+    ports:
+    - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    networks:
+      - auxdromos-network
+
+networks:
+  auxdromos-network:
+    driver: bridge

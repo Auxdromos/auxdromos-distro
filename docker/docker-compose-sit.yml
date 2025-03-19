@@ -66,6 +66,46 @@ services:
     networks:
       - auxdromos-network
 
+  config-server:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: auxdromos-config-server
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    command: >
+      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/config-server/config-server-AWS.jar /app/config-server-aws.jar &&
+             java -jar /app/config-server-aws.jar"
+    networks:
+      - auxdromos-network
+
+  rdbms-app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        PROFILE: dev
+    container_name: rdbms-app
+    ports:
+      - "8088:8088"
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    command: >
+      sh -c "aws s3 cp s3://auxdromos-artifacts-unique/rdbms/rdbms-AWS.jar /app/rdbms-aws.jar &&
+             java -jar /app/rdbms-aws.jar"
+    depends_on:
+      - postgres
+    networks:
+      - auxdromos-network
+
 networks:
   auxdromos-network:
     driver: bridge

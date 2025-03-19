@@ -18,7 +18,7 @@ build:
   stage: build
   script:
     - echo "Build del modulo $MODULE_NAME..."
-    - mvn clean package -Paws -DskipTests
+    - mvn clean package -Psit -DskipTests
   artifacts:
     paths:
       - target/*.jar
@@ -73,6 +73,12 @@ check_version:
       NEW_VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
       echo "Nuova versione rilevata: $NEW_VERSION"
       
+      # Controlla se la versione contiene "SNAPSHOT"
+      if [[ "$NEW_VERSION" == *"SNAPSHOT"* ]]; then
+        echo "Errore: la versione $NEW_VERSION è una versione SNAPSHOT e non può essere rilasciata sul ramo main"
+        exit 1
+      fi
+      
       CURRENT_FILE=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | awk '{print $4}' | sort -V | tail -n1)
       
       if [ -n "$CURRENT_FILE" ]; then
@@ -116,11 +122,12 @@ deploy_sit:
     - chmod 600 ~/.ssh/id_rsa
     - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
   script:
-    # Copia lo script deploy.sh sull'istanza EC2
-    - scp deploy.sh $EC2_USER@$EC2_HOST:/tmp/deploy.sh
-    # Esegui lo script in remoto sull'istanza EC2
-    - ssh $EC2_USER@$EC2_HOST 'bash /tmp/deploy.sh'
+    # Copia lo script deploy_distro.sh sull'istanza EC2
+    - scp aws/sit/script/deploy_distro.sh $EC2_USER@$EC2_HOST:/opt/auxdromos/scripts/deploy_distro.sh
+    # Esegui lo script di deploy in remoto
+    - ssh $EC2_USER@$EC2_HOST "bash /opt/auxdromos/scripts/deploy_distro.sh $MODULE_NAME"
   only:
     - main
   environment:
     name: sit
+

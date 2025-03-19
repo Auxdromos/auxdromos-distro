@@ -173,6 +173,7 @@ create_user() {
   PASSWORD=$(echo $user_data | grep -o '"password":"[^"]*' | sed 's/"password":"//')
   FIRST_NAME=$(echo $user_data | grep -o '"firstName":"[^"]*' | sed 's/"firstName":"//')
   LAST_NAME=$(echo $user_data | grep -o '"lastName":"[^"]*' | sed 's/"lastName":"//')
+  TENANT_ID=$(echo $user_data | grep -o '"tenantId":"[^"]*' | sed 's/"tenantId":"//')
   ROLE=$(echo $user_data | grep -o '"roles":\[.*\]' | sed 's/"roles":\[\(.*\)\]/\1/' | tr -d '[]"')
 
   echo "User '${USERNAME}' creating."
@@ -189,7 +190,10 @@ create_user() {
       \"lastName\": \"${LAST_NAME}\",
       \"credentials\": [{\"type\": \"password\", \"value\": \"${PASSWORD}\", \"temporary\": false}],
       \"enabled\": true,
-      \"emailVerified\": true
+      \"emailVerified\": true,
+      \"attributes\": {
+        \"tenantId\": [\"${TENANT_ID}\"]
+      }
     }")
 
  # Extract the HTTP response code
