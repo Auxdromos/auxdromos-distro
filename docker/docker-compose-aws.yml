@@ -21,7 +21,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0.7
-    container_name: keycloak-auxdromos
+    container_name: auxdromos-keycloak
     ports:
       - "8082:8080"
     environment:

@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    container_name: auxdromos-keycloak
+    env_file:
+      - ./env/keycloak.env
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://sit-auxdromos.cjgmm0kewpv2.us-east-1.rds.amazonaws.com:5432/sit-auxdromos?currentSchema=keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    command: start-dev
+    restart: on-failure
+    networks:
+      - auxdromos-network
+
+networks:
+  auxdromos-network:
+    external: true

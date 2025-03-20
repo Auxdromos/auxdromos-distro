@@ -30,6 +30,29 @@ KEYCLOAK_BASE_URL="${KEYCLOAK_URL}"
 # Crea la cartella per i file temporanei
 mkdir -p temp
 
+# Percorso del file JSON originale del realm
+REALM_JSON_FILE="/Users/mbranca/Work/AuxDromos/auxdromos-idp/docker/script/realm-export.json"
+
+if [ ! -f "$REALM_JSON_FILE" ]; then
+  echo "Errore: il file '$REALM_JSON_FILE' non esiste."
+  exit 1
+fi
+
+# Modifica il file JSON per aggiornare il client secret per il client auxdromos-cli
+# Si assume che l'attributo contenente il secret si chiami "secret" all'interno
+# dell'oggetto client. Se la struttura JSON prevede una configurazione diversa,
+# sarà necessario modificare il filtro jq.
+UPDATED_REALM_JSON="temp/realm-export-updated.json"
+if command -v jq >/dev/null 2>&1; then
+    jq --arg clientId "${KEYCLOAK_AUXDROMOS_CLIENT}" --arg newSecret "${KEYCLOAK_AUXDROMOS_CLIENT_SECRET}" '
+      (.clients[] | select(.clientId == $clientId)).secret = $newSecret
+    ' "$REALM_JSON_FILE" > "$UPDATED_REALM_JSON"
+    echo "Updated realm JSON file with new client secret for client ${KEYCLOAK_AUXDROMOS_CLIENT}."
+else
+    echo "jq non è installato. Non è possibile aggiornare il client secret automaticamente, utilizzo il file originale."
+    cp "$REALM_JSON_FILE" "$UPDATED_REALM_JSON"
+fi
+
 # Ciclo di retry per verificare la disponibilità di Keycloak
 MAX_RETRIES=10
 RETRY_INTERVAL=10
@@ -67,118 +90,67 @@ get_access_token() {
   echo "$TOKEN"
 }
 
-# Funzione per creare il realm
 create_realm() {
   local token="$1"
-  echo "Creating realm: ${KEYCLOAK_AUXDROMOS_REALM} ..."
-  response=$(curl -s -o temp/response.json -w "%{http_code}" -X POST \
-    "${KEYCLOAK_BASE_URL}/admin/realms" \
-    -H "Authorization: Bearer ${token}" \
+
+  echo "Aggiorno il realm '${KEYCLOAK_AUXDROMOS_REALM}' utilizzando il file $REALM_JSON_FILE..."
+  update_response=$(curl -s -w "\n%{http_code}" -X PUT "$KEYCLOAK_URL/admin/realms/${KEYCLOAK_AUXDROMOS_REALM}" \
     -H "Content-Type: application/json" \
-    -d "{\"realm\": \"${KEYCLOAK_AUXDROMOS_REALM}\", \"enabled\": true}")
-
-  http_code=$(tail -n1 <<< "$response")
-  response_body=$(cat temp/response.json)
-
-  echo "HTTP Response Code: $http_code"
-  echo "Response Body: $response_body"
-
-  if [[ "$http_code" -eq 201 ]]; then
-    echo "Realm '${KEYCLOAK_AUXDROMOS_REALM}' created successfully."
-  elif [[ "$http_code" -eq 409 ]]; then
-    echo "Realm '${KEYCLOAK_AUXDROMOS_REALM}' already exists or conflict occurred: $response_body"
-  else
-    echo "Error: Unable to create realm '${KEYCLOAK_AUXDROMOS_REALM}'. Exiting."
-    exit 1
-  fi
-}
-
-# Funzione per creare il client
-create_client() {
-  local token="$1"
-  echo "Creating client: ${KEYCLOAK_AUXDROMOS_CLIENT} ..."
-  response=$(curl -s -o temp/response.json -w "%{http_code}" -X POST \
-    "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_AUXDROMOS_REALM}/clients" \
     -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"clientId\": \"${KEYCLOAK_AUXDROMOS_CLIENT}\",
-      \"enabled\": true,
-      \"directAccessGrantsEnabled\": true,
-      \"publicClient\": false,
-      \"secret\": \"${KEYCLOAK_AUXDROMOS_CLIENT_SECRET}\",
-      \"redirectUris\": [${KEYCLOAK_AUXDROMOS_REDIRECT_URIS}]
-    }")
+    --data-binary "@$REALM_JSON_FILE")
 
-  http_code=$(tail -n1 <<< "$response")
-  response_body=$(cat temp/response.json)
+  http_code=$(echo "$update_response" | tail -n 1)
+  response_body=$(echo "$update_response" | sed '$d')
 
-  echo "HTTP Response Code: $http_code"
-  echo "Response Body: $response_body"
+  echo "PUT HTTP Code: $http_code"
+  echo "PUT Response Body: $response_body"
 
-  if [[ "$http_code" -eq 201 ]]; then
-    echo "Client '${KEYCLOAK_AUXDROMOS_CLIENT}' created successfully."
-  elif [[ "$http_code" -eq 409 ]]; then
-    echo "Client '${KEYCLOAK_AUXDROMOS_CLIENT}' already exists or conflict occurred: $response_body"
+  if [ "$http_code" -eq 204 ]; then
+    echo "Realm '${KEYCLOAK_AUXDROMOS_REALM}' updated successfully."
+  elif [ "$http_code" -eq 404 ]; then
+    echo "Realm '${KEYCLOAK_AUXDROMOS_REALM}' non trovato. Procedo a crearlo..."
+    create_response=$(curl -s -w "\n%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${token}" \
+    --data-binary "@$REALM_JSON_FILE")
+    create_http_code=$(echo "$create_response" | tail -n 1)
+    create_response_body=$(echo "$create_response" | sed '$d')
+    echo "POST HTTP Code: $create_http_code"
+    echo "POST Response Body: $create_response_body"
+
+    if [ "$create_http_code" -eq 201 ]; then
+      echo "Realm '${KEYCLOAK_AUXDROMOS_REALM}' created successfully."
+    else
+      echo "Error: Unable to create realm '${KEYCLOAK_AUXDROMOS_REALM}'."
+      exit 1
+    fi
   else
-    echo "Error: Unable to create client '${KEYCLOAK_AUXDROMOS_CLIENT}'. Exiting."
-    exit 1
-  fi
-}
-
-# Function to create a role
-create_role() {
-  # shellcheck disable=SC3043
-  local token="$1"
-  # shellcheck disable=SC3043
-  local role_name="$2"
-  response=$(curl -s -o temp/response.json -w "%{http_code}" -X POST \
-    "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_AUXDROMOS_REALM}/roles" \
-    -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d "{\"name\": \"${role_name}\"}")
-
- # Extract the HTTP response code
-  http_code=$(tail -n1 <<< "$response")
-
-  # Extract the response body (saved in temp/response.json)
-  response_body=$(cat temp/response.json)
-
-  # Print both the HTTP code and response body
-  echo "HTTP Response Code: $http_code"
-  echo "Response Body: $response_body"
-
-  # Handle different response codes
-  if [[ "$http_code" -eq 201 ]]; then
-    echo "Role '${role_name}' created successfully."
-  elif [[ "$http_code" -eq 409 ]]; then
-    echo "Conflict to create role '${role_name}': $response_body"
-  else
-    echo "Error: Unable to create role '${role_name}'."
-    echo "Unexpected Response ($http_code): $response_body"
+    echo "Error: Unable to update realm '${KEYCLOAK_AUXDROMOS_REALM}'."
     exit 1
   fi
 }
 
 # Function to create user and assign roles
 create_user() {
-  # shellcheck disable=SC3043
+  # Input:
+  # $1 token amministrativo
+  # $2 dati utente in formato JSON
+
   local token="$1"
-  # shellcheck disable=SC3043
   local user_data="$2"
 
-  # Extract user fields from JSON using shell utilities
-  USERNAME=$(echo $user_data | grep -o '"username":"[^"]*' | sed 's/"username":"//')
-  EMAIL=$(echo $user_data | grep -o '"email":"[^"]*' | sed 's/"email":"//')
-  PASSWORD=$(echo $user_data | grep -o '"password":"[^"]*' | sed 's/"password":"//')
-  FIRST_NAME=$(echo $user_data | grep -o '"firstName":"[^"]*' | sed 's/"firstName":"//')
-  LAST_NAME=$(echo $user_data | grep -o '"lastName":"[^"]*' | sed 's/"lastName":"//')
-  TENANT_ID=$(echo $user_data | grep -o '"tenantId":"[^"]*' | sed 's/"tenantId":"//')
-  ROLE=$(echo $user_data | grep -o '"roles":\[.*\]' | sed 's/"roles":\[\(.*\)\]/\1/' | tr -d '[]"')
+  # Estrai i campi dall'input JSON (utilizzando grep e sed)
+  USERNAME=$(echo "$user_data" | grep -o '"username":"[^"]*' | sed 's/"username":"//')
+  EMAIL=$(echo "$user_data" | grep -o '"email":"[^"]*' | sed 's/"email":"//')
+  PASSWORD=$(echo "$user_data" | grep -o '"password":"[^"]*' | sed 's/"password":"//')
+  FIRST_NAME=$(echo "$user_data" | grep -o '"firstName":"[^"]*' | sed 's/"firstName":"//')
+  LAST_NAME=$(echo "$user_data" | grep -o '"lastName":"[^"]*' | sed 's/"lastName":"//')
+  TENANT_ID=$(echo "$user_data" | grep -o '"tenantId":"[^"]*' | sed 's/"tenantId":"//')
+  ROLE=$(echo "$user_data" | grep -o '"roles":\[.*\]' | sed 's/"roles":\[\(.*\)\]/\1/' | tr -d '[]"')
 
   echo "User '${USERNAME}' creating."
 
-  # Create the user
+  # Crea l'utente con i campi base e includi l'attributo tenantId
   response=$(curl -s -o temp/response.json -w "%{http_code}" -X POST \
     "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_AUXDROMOS_REALM}/users" \
     -H "Authorization: Bearer ${token}" \
@@ -196,17 +168,12 @@ create_user() {
       }
     }")
 
- # Extract the HTTP response code
   http_code=$(tail -n1 <<< "$response")
-
-  # Extract the response body (saved in temp/response.json)
   response_body=$(cat temp/response.json)
 
-  # Print both the HTTP code and response body
   echo "HTTP Response Code: $http_code"
   echo "Response Body: $response_body"
 
-  # Handle different response codes
   if [[ "$http_code" -eq 201 ]]; then
     echo "User '${USERNAME}' created successfully."
   elif [[ "$http_code" -eq 409 ]]; then
@@ -217,13 +184,47 @@ create_user() {
     exit 1
   fi
 
-  # Fetch user ID
+  # Recupera l'ID dell'utente appena creato
   USER_ID=$(curl -s -X GET \
     "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_AUXDROMOS_REALM}/users?username=${USERNAME}" \
     -H "Authorization: Bearer ${token}" | grep -o '"id":"[^"]*' | sed 's/"id":"//')
 
-  # Assign roles to the user
-  for role in $(echo $ROLE | tr ',' ' '); do
+  if [ -z "$USER_ID" ]; then
+    echo "Errore: impossibile recuperare l'ID dell'utente ${USERNAME}."
+    exit 1
+  fi
+
+  echo "User ID: $USER_ID"
+
+  # Aggiorna l'attributo tenantId per l'utente (in caso sia necessario forzare l'aggiornamento)
+  echo "Aggiorno gli attributi dell'utente $USER_ID..."
+  update_payload=$(cat <<EOF
+{
+  "email": "${EMAIL}",
+  "firstName": "${FIRST_NAME}",
+  "lastName": "${LAST_NAME}",
+  "attributes": {
+    "tenantId": ["${TENANT_ID}"]
+  }
+}
+EOF
+)
+  update_response=$(curl -s -w "\n%{http_code}" -X PUT "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_AUXDROMOS_REALM}/users/${USER_ID}" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${token}" \
+    -d "$update_payload")
+  update_http_code=$(echo "$update_response" | tail -n 1)
+  update_response_body=$(echo "$update_response" | sed '$d')
+
+  echo "Update user attributes HTTP Code: $update_http_code"
+  echo "Update user attributes Response: $update_response_body"
+
+  if [[ "$update_http_code" -ne 204 ]]; then
+    echo "Warning: User attribute update did not return expected HTTP 204."
+  fi
+
+  # Assegna i ruoli all'utente
+  for role in $(echo "$ROLE" | tr ',' ' '); do
     ROLE_ID=$(curl -s -X GET \
       "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_AUXDROMOS_REALM}/roles/${role}" \
       -H "Authorization: Bearer ${token}" | grep -o '"id":"[^"]*' | sed 's/"id":"//')
@@ -238,23 +239,13 @@ create_user() {
   done
 }
 
+
 # Main function to setup Keycloak
 setup_keycloak() {
   echo "Getting admin access token..."
   TOKEN=$(get_access_token)
 
-  echo "Creating realm '${KEYCLOAK_AUXDROMOS_REALM}'..."
-  create_realm "$TOKEN"
-  echo "Real '${KEYCLOAK_AUXDROMOS_REALM}' created successfully."
-
-  echo "Creating client '${KEYCLOAK_AUXDROMOS_CLIENT}'..."
-  create_client "$TOKEN"
-  echo "Client '${KEYCLOAK_AUXDROMOS_CLIENT}' created successfully."
-
-  echo "Creating roles..."
-  create_role "$TOKEN" "$KEYCLOAK_AUXDROMOS_ADMIN_ROLE"
-  create_role "$TOKEN" "$KEYCLOAK_AUXDROMOS_USER_ROLE"
-  echo "Roles created successfully."
+  create_realm $TOKEN
 
   echo "Creating users from file '${KEYCLOAK_AUXDROMOS_USERS_FILE}'..."
   if [ ! -f "$KEYCLOAK_AUXDROMOS_USERS_FILE" ]; then
@@ -271,7 +262,8 @@ setup_keycloak() {
       echo "Warning: Empty line detected in users file."
     fi
   done < <(jq -c '.[]' "$KEYCLOAK_AUXDROMOS_USERS_FILE") # Extract JSON objects
-    echo "Keycloak setup complete."
+
+  echo "Keycloak setup complete."
 }
 
 # Start the setup

@@ -14,6 +14,7 @@ include:
 variables:
   S3_BUCKET_NAME: "auxdromos-artifacts-unique"
   AWS_DEFAULT_REGION: "us-east-1"
+  MODULES_TO_REFRESH: "rdbms gateway backend idp"
 
 extract_module_name:
   stage: prepare
@@ -131,23 +132,62 @@ check_version:
 
 deploy_sit:
   stage: deploy_sit
-  image: alpine:latest
-  dependencies:
-    - artifact_upload_s3
-  before_script:
-    - apk update && apk add --no-cache openssh-client bash docker-compose
-    - mkdir -p ~/.ssh
-    # Imposta la chiave privata per la connessione SSH
-    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
-    - chmod 600 ~/.ssh/id_rsa
-    - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
   script:
-    # Copia lo script deploy_distro.sh sull'istanza EC2
-    - scp aws/sit/script/deploy_distro.sh $EC2_USER@$EC2_HOST:/opt/auxdromos/scripts/deploy_distro.sh
-    # Esegui lo script di deploy in remoto
-    - ssh $EC2_USER@$EC2_HOST "bash /opt/auxdromos/scripts/deploy_distro.sh $MODULE_NAME"
+    - |
+      # Carica le variabili d'ambiente necessarie
+      source "env/deploy.env"
+      
+      # Verifica se Keycloak è in esecuzione
+      KEYCLOAK_RUNNING=$(ssh $EC2_USER@$EC2_HOST "docker ps | grep -q 'keycloak-auxdromos' && echo 'true' || echo 'false'")
+      
+      # Leggi il nome del modulo corrente
+      CURRENT_MODULE="$MODULE_NAME"
+      
+      if [ "$KEYCLOAK_RUNNING" = "false" ]; then
+        echo "Keycloak non è attivo. Verrà deployato prima di procedere..."
+        ./deploy_module.sh "$CURRENT_MODULE"
+      else
+        # Keycloak è già attivo, facciamo il deploy solo del modulo corrente
+        echo "Deploy del modulo $CURRENT_MODULE..."
+        ./deploy_module.sh "$CURRENT_MODULE"
+      fi
+  dependencies:
+    - extract_module_name
   only:
     - main
   environment:
     name: sit
 
+refresh-services:
+  stage: refresh
+  before_script:
+    - mkdir -p ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+  script:
+    - echo "🔄 Avvio refresh delle configurazioni su AWS..."
+    - |
+      ssh -i ~/.ssh/id_rsa $EC2_USER@$EC2_HOST << 'EOF'
+        for service in $MODULES_TO_REFRESH; do
+          echo "🔹 Tentativo di refresh per $service su AWS..."
+          success=false
+          for i in {1..3}; do
+            if curl -X POST http://$service:8080/config/refresh --max-time 5 --silent --fail; then
+              echo "✅ Refresh riuscito per $service su AWS!"
+              success=true
+              break
+            else
+              echo "⚠ Tentativo $i fallito per $service... Riprovo in 5 secondi"
+              sleep 5
+            fi
+          done
+          if [ "$success" = false ]; then
+            echo "❌ Errore critico: il servizio $service su AWS non ha risposto dopo 3 tentativi!"
+            exit 1
+          fi
+        done
+      EOF
+  only:
+    - main
+  retry: 2

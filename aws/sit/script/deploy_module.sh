@@ -15,45 +15,122 @@ if [[ -z "$MODULO" ]]; then
   exit 1
 fi
 
+# Funzione per verificare se Keycloak è in esecuzione
+check_keycloak() {
+  docker ps | grep -q "keycloak-auxdromos"
+  return $?
+}
+
+# Funzione per verificare se un'immagine esiste su ECR
+check_image_exists() {
+  local MODULE_NAME=$1
+  local REPOSITORY="auxdromos-${MODULE_NAME}"
+
+  # Verifica se il repository esiste su ECR
+  aws ecr describe-repositories --repository-names "$REPOSITORY" &>/dev/null
+
+  if [ $? -ne 0 ]; then
+    # Repository non esiste
+    return 1
+  fi
+
+  # Verifica se ci sono immagini nel repository
+  local IMAGE_COUNT=$(aws ecr describe-images --repository-name "$REPOSITORY" --query "length(imageDetails)" --output text)
+
+  if [ "$IMAGE_COUNT" -eq "0" ]; then
+    # Repository esiste ma è vuoto
+    return 1
+  fi
+
+  # Immagine esiste
+  return 0
+}
+
+# Funzione per deployare Keycloak e eseguire il setup
+deploy_keycloak() {
+  echo "Deploying Keycloak..."
+
+  # Assicurati che la rete esista
+  docker network create auxdromos-network 2>/dev/null || true
+
+  # Deploy di Keycloak usando il file docker-compose specifico
+  docker-compose -f "$BASE_PATH/docker/docker-compose-keycloak.yml" up -d
+
+  echo "Deploy di Keycloak completato!"
+
+  # Aspetta che Keycloak sia pronto
+  echo "Attesa per l'avvio di Keycloak..."
+  sleep 30
+
+  # Esegui lo script di setup di Keycloak
+  echo "Esecuzione dello script di setup di Keycloak..."
+  bash aws/sit/setup/keycloak-setup.sh
+
+  echo "Setup di Keycloak completato!"
+}
+
 # Funzione per effettuare il deploy di un modulo
 deploy_module() {
   local MODULE_NAME=$1
   echo "Deploying $MODULE_NAME..."
 
-  # Recupera l'ultima versione stabile del modulo da S3
-  LATEST_VERSION=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ | awk '{print $4}' | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.jar$" | sort | tail -n 1 | sed 's/.*\([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/')
+  # Verifica se l'immagine per questo modulo esiste
+  if ! check_image_exists "$MODULE_NAME"; then
+    echo "Attenzione: Nessuna immagine trovata per il modulo $MODULE_NAME su ECR. Il deployment sarà saltato."
+    return 0
+  fi
 
-  if [[ -z "$LATEST_VERSION" ]]; then
+  # Recupera l'ultima versione stabile del modulo da ECR
+  LATEST_VERSION=$(aws ecr describe-images --repository-name "auxdromos-${MODULE_NAME}" --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text | grep -v null)
+
+  if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "None" ]]; then
     echo "Errore: impossibile recuperare la versione più recente per $MODULE_NAME."
-    exit 1
+    return 1
   fi
 
   echo "Ultima versione trovata per $MODULE_NAME: $LATEST_VERSION"
 
-  # Scarica il JAR aggiornato
-  echo "Scaricando il JAR aggiornato da S3..."
-  aws s3 cp s3://$S3_BUCKET_NAME/$MODULE_NAME/$MODULE_NAME-$LATEST_VERSION-AWS.jar $EC2_APP_DIR/
-
   # Pull dell'ultima immagine Docker
   echo "Scaricando l'ultima immagine Docker..."
-  docker pull $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$MODULE_NAME:$LATEST_VERSION
+  docker pull $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$LATEST_VERSION
 
-  # Aggiorna il docker-compose.yml con la nuova versione
-  echo "Aggiornando il docker-compose.yml..."
-  sed -i "s/latest/$LATEST_VERSION/g" "$BASE_PATH/docker/docker-compose.yml"
+  # Imposta le variabili per il docker-compose
+  export MODULO=$MODULE_NAME
+  export VERSION=$LATEST_VERSION
+
+  # Carica le configurazioni specifiche del modulo
+  if [[ -f "$BASE_PATH/env/$MODULE_NAME.env" ]]; then
+    source "$BASE_PATH/env/$MODULE_NAME.env"
+  fi
 
   # Esegue il deploy del modulo tramite docker-compose
   echo "Avviando il servizio $MODULE_NAME..."
-  docker-compose -f "$BASE_PATH/docker/docker-compose.yml" up -d --build
+  docker-compose -f "$BASE_PATH/docker/docker-compose.yml" up -d
 
   echo "Deploy di $MODULE_NAME completato!"
 }
 
-# Verifica se si deve deployare tutti i moduli o solo uno specifico
+# Prima verifica se Keycloak è già in esecuzione
+if ! check_keycloak; then
+  echo "Keycloak non è in esecuzione, verrà deployato..."
+  deploy_keycloak
+fi
+
+# Controlla se è un "deploy all" o di un singolo modulo
 if [[ "$MODULO" == "all" ]]; then
-  for mod in $MODULES; do
-    deploy_module "$mod"
-  done
+  # Per il deploy di tutti i moduli, usa l'ordine specificato in $MODULE_ORDER se disponibile
+  if [[ -n "$MODULE_ORDER" ]]; then
+    echo "Esecuzione del deploy dei moduli nell'ordine specificato..."
+    for mod in $MODULE_ORDER; do
+      deploy_module "$mod"
+    done
+  else
+    # Altrimenti usa l'elenco standard dei moduli
+    for mod in $MODULES; do
+      deploy_module "$mod"
+    done
+  fi
 else
+  # Deploy di un singolo modulo
   deploy_module "$MODULO"
 fi

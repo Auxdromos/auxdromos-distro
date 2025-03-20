@@ -2,7 +2,7 @@
   {
     "username": "admin_user_tenant1",
     "password": "tenant1_pwd_admin",
-    "email": "admin@example.com",
+    "email": "admin_tanant1@example.com",
     "firstName": "Admin",
     "lastName": "Tenant1",
     "tenantId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
@@ -11,7 +11,7 @@
   {
     "username": "normal_user_tenant1",
     "password": "tenant1_pwd_normal",
-    "email": "user@example.com",
+    "email": "user_tanant1@example.com",
     "firstName": "Normal",
     "tenantId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
     "lastName": "Tenant1",
@@ -20,7 +20,7 @@
   {
     "username": "admin_user_tenant2",
     "password": "tenant2_pwd_admin",
-    "email": "admin@example.com",
+    "email": "admin_tanant2@example.com",
     "firstName": "Admin",
     "lastName": "Tenant2",
     "tenantId": "550e8400-e29b-41d4-a716-446655440000",
@@ -29,7 +29,7 @@
   {
     "username": "normal_user_tenant2",
     "password": "tenant2_pwd_normal",
-    "email": "user@example.com",
+    "email": "user_tanant2@example.com",
     "firstName": "Normal",
     "tenantId": "550e8400-e29b-41d4-a716-446655440000",
     "lastName": "Tenant2",
