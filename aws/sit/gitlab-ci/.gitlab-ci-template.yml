@@ -17,16 +17,15 @@ variables:
 
 extract_module_name:
   stage: prepare
-  script:
-    - echo "Estrazione del MODULE_NAME dal pom.xml..."
-    - export MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
-    - if [ -z "$MODULE_NAME" ]; then echo "Errore: impossibile estrarre MODULE_NAME dal pom.xml"; exit 1; fi
-    - echo "MODULE_NAME estratto: $MODULE_NAME"
-    - echo "MODULE_NAME=$MODULE_NAME" >> module_name.env
+  script: |
+    echo "Estrazione del MODULE_NAME dal pom.xml..."
+    export MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+    if [ -z "$MODULE_NAME" ]; then echo "Errore: impossibile estrarre MODULE_NAME dal pom.xml"; exit 1; fi
+    echo "MODULE_NAME estratto: $MODULE_NAME"
+    echo "MODULE_NAME=$MODULE_NAME" >> module_name.env
   artifacts:
     reports:
       dotenv: module_name.env
-
 
 build:
   stage: build
