@@ -1,6 +1,7 @@
 image: maven:3.9.9-amazoncorretto-17
 
 stages:
+  - prepare
   - build
   - test
   - artifact_upload_s3
@@ -14,8 +15,23 @@ variables:
   S3_BUCKET_NAME: "auxdromos-artifacts-unique"
   AWS_DEFAULT_REGION: "us-east-1"
 
+extract_module_name:
+  stage: prepare
+  script:
+    - echo "Estrazione del MODULE_NAME dal pom.xml..."
+    - export MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+    - if [ -z "$MODULE_NAME" ]; then echo "Errore: impossibile estrarre MODULE_NAME dal pom.xml"; exit 1; fi
+    - echo "MODULE_NAME estratto: $MODULE_NAME"
+    - echo "MODULE_NAME=$MODULE_NAME" >> module_name.env
+  artifacts:
+    reports:
+      dotenv: module_name.env
+
+
 build:
   stage: build
+  dependencies:
+    - extract_module_name
   script:
     - echo "Build del modulo $MODULE_NAME..."
     - mvn clean package -Psit -DskipTests
@@ -25,6 +41,8 @@ build:
 
 test:
   stage: test
+  dependencies:
+    - extract_module_name
   script:
     - echo "Test del modulo $MODULE_NAME..."
     - mvn test
@@ -36,6 +54,7 @@ artifact_upload_s3:
     entrypoint: [""]
   dependencies:
     - build
+    - extract_module_name
   script:
     - set -x
     - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
@@ -64,6 +83,8 @@ artifact_upload_s3:
 
 check_version:
   stage: check_version
+  dependencies:
+    - extract_module_name
   image: amazon/aws-cli:latest
   only:
     - main
