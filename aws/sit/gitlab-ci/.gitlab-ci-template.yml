@@ -9,9 +9,7 @@ stages:
   - build_docker
   - deploy_sit
 
-# Inclusione eventuale di template GitLab per scanning o altro
-include:
-  - template: Security/Dependency-Scanning.gitlab-ci.yml
+# Rimuovo l'inclusione duplicata del template di security
 
 extract_module_name:
   stage: prepare

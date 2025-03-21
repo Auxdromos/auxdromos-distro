@@ -1,6 +1,5 @@
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
-  # Include il template comune per riutilizzare gli stage standardizzati
   - local: ./aws/sit/gitlab-ci/.gitlab-ci-template.yml
 
 image: alpine:latest
@@ -13,7 +12,6 @@ stages:
   - upload
   - deploy_configs
 
-# Sovrascrivi solo lo stage di preparazione specifico per questo progetto
 extract_module_info:
   stage: prepare
   script:
@@ -36,7 +34,6 @@ extract_module_info:
     reports:
       dotenv: module_info.env
 
-# Correggi la lettura del file env nel check_version
 check_version:
   stage: check_version
   dependencies:
@@ -52,7 +49,7 @@ check_version:
 
     echo "Verifica della versione..."
 
-    # Corretto il nome del file
+    # Carichiamo VERSION dal file .env creato prima - CORRETTO IL NOME DEL FILE
     if [ -f module_info.env ]; then
       . module_info.env
     fi
@@ -69,11 +66,10 @@ check_version:
       exit 1
     fi
 
-    # Corretto il controllo su S3 per evitare errori
-    # aws s3api head-bucket verifica solo l'esistenza del bucket, non il prefisso
+    # Corretto il controllo su S3 per uniformità con l'altro file
     FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
 
-    echo "DEBUG FOUND = $FOUND"
+    echo "DEBUG FOUND = $FOUND" # Aggiunto per debug
 
     if [[ "$FOUND" -gt 0 ]]; then
         echo "Versione già presente su S3. Interrompo la pipeline."
