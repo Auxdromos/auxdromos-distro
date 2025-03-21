@@ -5,6 +5,7 @@ image: alpine:latest
 
 stages:
   - prepare
+  - test       # Aggiunto questo stage per il Dependency Scanning
   - package
   - upload
   - deploy_configs
