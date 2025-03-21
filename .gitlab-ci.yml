@@ -85,6 +85,7 @@ deploy_to_sit:
   dependencies:
     - extract_module_info
   before_script:
+    - echo "Lunghezza EC2_PRIVATE_KEY $(echo "$EC2_PRIVATE_KEY" | wc -c)"
     - apk update && apk add --no-cache openssh-client bash
     - mkdir -p ~/.ssh
     - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito"; exit 1; fi
