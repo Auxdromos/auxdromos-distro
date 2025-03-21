@@ -1,5 +1,7 @@
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
+  # Include il template comune per riutilizzare gli stage standardizzati
+  - local: .gitlab-ci-template.yml
 
 image: alpine:latest
 
@@ -11,6 +13,7 @@ stages:
   - upload
   - deploy_configs
 
+# Sovrascrivi solo lo stage di preparazione specifico per questo progetto
 extract_module_info:
   stage: prepare
   script:
@@ -33,10 +36,11 @@ extract_module_info:
     reports:
       dotenv: module_info.env
 
+# Correggi la lettura del file env nel check_version
 check_version:
   stage: check_version
   dependencies:
-    - extract_module_name
+    - extract_module_info
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
@@ -48,12 +52,12 @@ check_version:
 
     echo "Verifica della versione..."
 
-    # Carichiamo VERSION dal file .env creato prima
-    if [ -f module_name.env ]; then
-      . module_name.env
+    # Corretto il nome del file
+    if [ -f module_info.env ]; then
+      . module_info.env
     fi
 
-    # Vietiamo l’uso di SNAPSHOT in main
+    # Vietiamo l'uso di SNAPSHOT in main
     if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
       echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
       exit 1
@@ -65,19 +69,15 @@ check_version:
       exit 1
     fi
 
-    # Verifichiamo se la versione esiste su S3
-    if aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --prefix "$MODULE_NAME/$VERSION/" > /dev/null 2>&1; then
-      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
-    else
-      FOUND=0
-    fi
+    # Corretto il controllo su S3 per evitare errori
+    # aws s3api head-bucket verifica solo l'esistenza del bucket, non il prefisso
+    FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
 
-    echo "DEBUG FOUND = $FOUND" # Aggiunto per debug
+    echo "DEBUG FOUND = $FOUND"
 
-    # Esempio di controllo basato su $FOUND (adatta alla tua logica)
     if [[ "$FOUND" -gt 0 ]]; then
         echo "Versione già presente su S3. Interrompo la pipeline."
-        exit 1 # or handle it differently
+        exit 1
     else
         echo "Versione non presente su S3. Procedo..."
     fi
@@ -131,56 +131,3 @@ upload_to_s3:
     - aws configure set region "${AWS_DEFAULT_REGION}"
     - echo "Caricamento su S3 in s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
     - aws s3 cp dist/ "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" --recursive
-
-    - echo "{\"latestVersion\":\"${VERSION}\",\"updateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > latest.json
-    - aws s3 cp latest.json "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest.json"
-
-    # Mantieni max 5 versioni
-    - LIST=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" | grep PRE | awk '{print $2}' | sed 's#/##' | sort -r)
-    - COUNT=0
-    - for ver in $LIST; do
-      ((COUNT++))
-      if [ $COUNT -gt 5 ]; then
-      echo "Elimino versione più vecchia su S3 $ver"
-      aws s3 rm "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/$ver" --recursive
-      fi
-      done
-
-    - echo "Caricamento completato!"
-  only:
-    - main
-  environment:
-    name: sit
-
-deploy_to_sit:
-  stage: deploy_configs
-  image: alpine:latest
-  dependencies:
-    - extract_module_info
-    - check_version
-  before_script:
-    - apk update && apk add --no-cache openssh-client bash
-    - mkdir -p ~/.ssh
-    - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito"; exit 1; fi
-    - if [ -z "$EC2_PRIVATE_KEY" ]; then echo "EC2_PRIVATE_KEY non definito"; exit 1; fi
-    - if [ -z "$EC2_USER" ]; then echo "EC2_USER non definito"; exit 1; fi
-    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
-    - if [ ! -s ~/.ssh/id_rsa ]; then echo "La chiave privata SSH è vuota"; exit 1; fi
-    - chmod 600 ~/.ssh/id_rsa
-    - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || true
-  script:
-    - set -x
-    - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "Aggiornamento delle configurazioni sull'ambiente SIT..."
-    - echo "#!/bin/bash" > update_configs.sh
-    - echo "set -e" >> update_configs.sh
-    - echo "cd ~/auxdromos" >> update_configs.sh
-    - echo "git pull" >> update_configs.sh
-    - echo "echo \"Configurazioni aggiornate con successo!\"" >> update_configs.sh
-    - scp update_configs.sh "$EC2_USER@$EC2_HOST:/tmp/"
-    - ssh -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "bash /tmp/update_configs.sh"
-    - echo "Configurazioni aggiornate su SIT con successo!"
-  only:
-    - main
-  environment:
-    name: sit

@@ -53,7 +53,7 @@ check_version:
       . module_name.env
     fi
 
-    # Vietiamo l’uso di SNAPSHOT in main
+    # Vietiamo l'uso di SNAPSHOT in main
     if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
       echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
       exit 1
@@ -65,19 +65,14 @@ check_version:
       exit 1
     fi
 
-    # Verifichiamo se la versione esiste su S3
-    if aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --prefix "$MODULE_NAME/$VERSION/" > /dev/null 2>&1; then
-      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
-    else
-      FOUND=0
-    fi
+    # Corretto il controllo su S3 per evitare errori
+    FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
 
-    echo "DEBUG FOUND = $FOUND" # Aggiunto per debug
+    echo "DEBUG FOUND = $FOUND"
 
-    # Esempio di controllo basato su $FOUND (adatta alla tua logica)
     if [[ "$FOUND" -gt 0 ]]; then
         echo "Versione già presente su S3. Interrompo la pipeline."
-        exit 1 # or handle it differently
+        exit 1
     else
         echo "Versione non presente su S3. Procedo..."
     fi
@@ -134,127 +129,13 @@ artifact_upload_s3:
       # Carica i JAR
       JARS=$(find target -name "*.jar" -type f)
       for jar in $JARS; do
-        aws s3 cp "$jar" "s3://$S3_BUCKET/$ARTIFACT_DIR/$(basename $jar)"
+        aws s3 cp "$jar" "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/$(basename $jar)"
       done
       
       # Carica build-info.json
-      aws s3 cp target/build-info.json "s3://$S3_BUCKET/$ARTIFACT_DIR/build-info.json"
+      aws s3 cp target/build-info.json "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/build-info.json"
       
       # Carica directory di distribuzione se presente
       if [ -d "target/distribution" ]; then
-        aws s3 cp target/distribution/ "s3://$S3_BUCKET/$ARTIFACT_DIR/distribution/" --recursive
+        aws s3 cp target/distribution/ "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/distribution/" --recursive
       fi
-      
-      # Crea/aggiorna anche un marker "latest"
-      echo "{\"latestVersion\": \"$VERSION\", \"updateTime\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > latest.json
-      aws s3 cp latest.json "s3://$S3_BUCKET/$MODULE_NAME/latest.json"
-      
-      # Mantenere max 5 versioni su S3 (opzionale)
-      LIST=$(aws s3 ls "s3://$S3_BUCKET/$MODULE_NAME/" | grep PRE | awk '{print $2}' | sed 's#/##' | sort -r)
-      COUNT=0
-      for ver in $LIST; do
-        ((COUNT++))
-        if [ $COUNT -gt 5 ]; then
-          echo "Elimino la versione S3 più vecchia: $ver"
-          aws s3 rm "s3://$S3_BUCKET/$MODULE_NAME/$ver" --recursive
-        fi
-      done
-
-      echo "Artefatti caricati con successo su S3: s3://$S3_BUCKET/$ARTIFACT_DIR/"
-  only:
-    - main
-  environment:
-    name: sit
-
-build_docker:
-  stage: build_docker
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
-  services:
-    - docker:dind
-  dependencies:
-    - build
-    - extract_module_name
-    - check_version
-  script:
-    - |
-      # Installa Docker
-      amazon-linux-extras install docker
-      service docker start
-      
-      # Autenticazione ad AWS ECR
-      aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-      
-      # Creare il repository ECR se non esiste
-      aws ecr describe-repositories --repository-names auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION || \
-        aws ecr create-repository --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION
-      
-      cat > Dockerfile <<EOF
-      FROM amazoncorretto:17
-      
-      # Copia i file di distribuzione
-      COPY target/*.jar /app/
-      COPY target/distribution/ /app/distribution/
-      COPY target/build-info.json /app/
-      
-      WORKDIR /app
-      ENV APP_ENV=sit
-      
-      ENTRYPOINT ["java", "-jar", "$MODULE_NAME.jar"]
-      EOF
-      
-      # Build dell'immagine Docker
-      docker build -t auxdromos-$MODULE_NAME:$VERSION .
-      
-      # Tag e push dell'immagine a ECR
-      docker tag auxdromos-$MODULE_NAME:$VERSION $ECR_REGISTRY/auxdromos-$MODULE_NAME:$VERSION
-      docker push $ECR_REGISTRY/auxdromos-$MODULE_NAME:$VERSION
-      
-      docker tag auxdromos-$MODULE_NAME:$VERSION $ECR_REGISTRY/auxdromos-$MODULE_NAME:latest
-      docker push $ECR_REGISTRY/auxdromos-$MODULE_NAME:latest
-      
-      # Gestione delle immagini vecchie: ne teniamo 5
-      IMAGES_TO_DELETE=$(aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION \
-        --query 'sort_by(imageDetails,& imagePushedAt)[:-5].imageDigest' --output text)
-      
-      if [ -n "$IMAGES_TO_DELETE" ]; then
-        for digest in $IMAGES_TO_DELETE; do
-          echo "Elimino l'immagine con digest: $digest"
-          aws ecr batch-delete-image --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION \
-            --image-ids imageDigest=$digest
-        done
-      fi
-  only:
-    - main
-  environment:
-    name: sit
-
-deploy_sit:
-  stage: deploy_sit
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
-  dependencies:
-    - extract_module_name
-    - check_version
-  script:
-    - |
-      # Installa SSH client
-      yum install -y openssh-clients
-      
-      # Configura SSH key
-      mkdir -p ~/.ssh
-      echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
-      chmod 600 ~/.ssh/id_rsa
-      echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
-      
-      # Aggiorna script di deploy (se serve)
-      rsync -avz ./scripts/deploy_module.sh $EC2_USER@$EC2_HOST:/opt/auxdromos/aws/sit/scripts/
-      
-      # Esegui il deploy
-      ssh $EC2_USER@$EC2_HOST "cd /opt/auxdromos/aws/sit && ./scripts/deploy_module.sh $MODULE_NAME"
-  only:
-    - main
-  environment:
-    name: sit
