@@ -40,34 +40,33 @@ check_version:
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
+  only:
+    - main
   script: |
-    echo "Verifica della versione per il branch $CI_COMMIT_REF_NAME ..."
+    set -e
+    set -o pipefail
+
+    echo "Verifica della versione..."
 
     # Carichiamo VERSION dal file .env creato prima
     if [ -f module_name.env ]; then
       . module_name.env
     fi
 
-    # Consentiamo la pipeline solo su main
-    if [[ "$CI_COMMIT_REF_NAME" != "main" ]]; then
-      echo "Branch non è 'main': interrompo la pipeline."
-      exit 1
-    fi
 
-    # 1) Vietiamo l’uso di SNAPSHOT in main
+    # Vietiamo l’uso di SNAPSHOT in main
     if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
-      echo "Versione $VERSION non valida in main (SNAPSHOT non consentito)."
+      echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
       exit 1
     fi
 
-    # 2) Verifichiamo se questa versione esiste già in ECR (quindi se è già rilasciata)
-    aws ecr describe-images \
-      --repository-name auxdromos-$MODULE_NAME \
-      --image-ids imageTag=$VERSION \
-      --region $AWS_DEFAULT_REGION && {
-      echo "La versione $VERSION risulta già rilasciata su ECR! Interrompo la pipeline."
+    # Verifichiamo se questa versione esiste già in ECR
+    if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
+      echo "Errore: La versione '$VERSION' è già presente su ECR."
       exit 1
-    } || echo "Versione non ancora presente su ECR, procedo..."
+    else
+      echo "Versione non ancora presente su ECR, procedo..."
+    fi
 
 build:
   stage: build
