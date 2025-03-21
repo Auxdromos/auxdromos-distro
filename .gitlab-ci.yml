@@ -60,6 +60,8 @@ upload_to_s3:
     - extract_module_info
   script:
     - echo "Caricamento delle configurazioni su S3..."
+    # Se il file dotenv esiste, caricalo per avere MODULE_NAME e VERSION
+    - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Utilizzo bucket S3 $S3_BUCKET Nome modulo $MODULE_NAME Versione $VERSION"
     - ls -la dist/
     - aws configure set region ${AWS_DEFAULT_REGION}
@@ -70,6 +72,7 @@ upload_to_s3:
   only:
     - develop
     - main
+
 
 deploy_to_sit:
   stage: deploy_configs
