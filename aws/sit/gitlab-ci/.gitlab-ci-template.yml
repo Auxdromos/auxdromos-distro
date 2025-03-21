@@ -27,6 +27,9 @@ extract_module_name:
     export VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
     echo "VERSION=$VERSION" >> module_name.env
     echo "VERSION estratta: $VERSION"
+    
+    # Aggiungi informazioni sul branch
+    echo "CI_COMMIT_REF_NAME=$CI_COMMIT_REF_NAME" >> module_name.env
   artifacts:
     reports:
       dotenv: module_name.env
@@ -38,8 +41,6 @@ check_version:
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
-  only:
-    - main
   script: |
     set -e
     set -o pipefail
@@ -50,41 +51,58 @@ check_version:
     if [ -f module_name.env ]; then
       . module_name.env
     fi
-
-    # Vietiamo l'uso di SNAPSHOT in main
-    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
-      echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
-      exit 1
-    fi
-
-    # Verifichiamo se questa versione esiste già in ECR
-    if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
-      echo "Errore: La versione '$VERSION' è già presente su ECR."
-      exit 1
-    fi
-
-    # Corretto il controllo su S3 per evitare errori
-    FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
-
-    echo "DEBUG FOUND = $FOUND"
-
-    if [[ "$FOUND" -gt 0 ]]; then
+    
+    # Regole diverse per branch diversi
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      # Solo per main: vietiamo l'uso di SNAPSHOT
+      if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
+        echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
+        exit 1
+      fi
+    
+      # Solo per main: verifichiamo su ECR
+      if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
+        echo "Errore: La versione '$VERSION' è già presente su ECR."
+        exit 1
+      fi
+    
+      # Solo per main: verifichiamo su S3
+      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
+      echo "DEBUG FOUND = $FOUND"
+    
+      if [[ "$FOUND" -gt 0 ]]; then
         echo "Versione già presente su S3. Interrompo la pipeline."
         exit 1
-    else
+      else
         echo "Versione non presente su S3. Procedo..."
+      fi
+    else
+      # Per develop: consentiamo SNAPSHOT ma controlliamo se esiste già nella cartella develop
+      if [[ "$VERSION" != *"SNAPSHOT"* ]]; then
+        echo "Avviso: Versione '$VERSION' in 'develop' non è una SNAPSHOT. Consigliato usare suffisso -SNAPSHOT."
+      fi
+    
+      # Verifica su S3 nel percorso develop
+      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
+      echo "DEBUG FOUND = $FOUND"
+    
+      if [[ "$FOUND" -gt 0 ]]; then
+        echo "Versione già presente su S3 nel percorso develop. Sovrascrivo..."
+      fi
     fi
 
 build:
   stage: build
   dependencies:
     - extract_module_name
-    - check_version
   script:
     - echo "Build del modulo $MODULE_NAME..."
     - mvn clean package -Psit -DskipTests
     # Crea un file manifest che descrive questa build
     - |
+      if [ -f module_name.env ]; then
+        . module_name.env
+      fi
       cat > target/build-info.json <<EOF
       {
         "moduleName": "$MODULE_NAME",
@@ -117,26 +135,72 @@ artifact_upload_s3:
   dependencies:
     - build
     - extract_module_name
-    - check_version
-  script:
-    - |
-      echo "Caricamento degli artefatti su S3..."
-      
+  script: |
+    echo "Caricamento degli artefatti su S3..."
+    
+    if [ -f module_name.env ]; then
+      . module_name.env
+    fi
+    
+    # Cambia il percorso in base al branch
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      # Per il branch main, usa il percorso standard
       ARTIFACT_DIR="$MODULE_NAME/$VERSION"
-      
-      # Carica i JAR
-      JARS=$(find target -name "*.jar" -type f)
-      for jar in $JARS; do
-        aws s3 cp "$jar" "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/$(basename $jar)"
-      done
-      
-      # Carica build-info.json
-      aws s3 cp target/build-info.json "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/build-info.json"
-      
-      # Carica directory di distribuzione se presente
-      if [ -d "target/distribution" ]; then
-        aws s3 cp target/distribution/ "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/distribution/" --recursive
-      fi
+      echo "Caricamento artefatti di produzione in $ARTIFACT_DIR"
+    else
+      # Per develop o altri branch, aggiungi develop come prefisso
+      ARTIFACT_DIR="develop/$MODULE_NAME/$VERSION"
+      echo "Caricamento artefatti di sviluppo in $ARTIFACT_DIR"
+    fi
+    
+    # Carica i JAR
+    JARS=$(find target -name "*.jar" -type f)
+    for jar in $JARS; do
+      aws s3 cp "$jar" "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/$(basename $jar)"
+    done
+    
+    # Carica build-info.json
+    aws s3 cp target/build-info.json "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/build-info.json"
+    
+    # Carica directory di distribuzione se presente
+    if [ -d "target/distribution" ]; then
+      aws s3 cp target/distribution/ "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/distribution/" --recursive
+    fi
+
+build_docker:
+  stage: build_docker
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  dependencies:
+    - extract_module_name
+    - artifact_upload_s3
+  only:
+    - main
+  script: |
+    if [ -f module_name.env ]; then
+      . module_name.env
+    fi
+    
+    # Solo per main, non creare docker per versioni SNAPSHOT
+    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
+      echo "Attenzione: Versione SNAPSHOT rilevata su main. Non costruisco l'immagine Docker."
+      exit 1
+    fi
+    
+    echo "Costruzione dell'immagine Docker per $MODULE_NAME:$VERSION"
+    
+    # Configurazione AWS CLI per ECR
+    apk add --no-cache aws-cli
+    aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+    
+    # Recupera gli artefatti da S3
+    aws s3 cp "s3://$S3_BUCKET_NAME/$MODULE_NAME/$VERSION/" ./artifacts/ --recursive
+    
+    # Costruisci e pubblica l'immagine Docker
+    docker build -t auxdromos-$MODULE_NAME:$VERSION .
+    docker tag auxdromos-$MODULE_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
+    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
 
 deploy_sit:
   stage: deploy_sit
@@ -149,13 +213,15 @@ deploy_sit:
     - main
   script: |
     echo "Esecuzione del deploy in ambiente SIT..."
-    if [ -f module_name.env ]; then . module_name.env; fi
+    if [ -f module_name.env ]; then 
+      . module_name.env
+    fi
     echo "Modulo da deployare: $MODULE_NAME"
     
-    # Docker è già installato, configuriamo solo Docker Compose se necessario
-    if ! command -v docker-compose &>/dev/null; then
-      curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-      chmod +x /usr/local/bin/docker-compose
+    # Solo per main, non fare deploy di versioni SNAPSHOT
+    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
+      echo "Errore: Versione SNAPSHOT rilevata su main. Impossibile eseguire il deploy."
+      exit 1
     fi
     
     # Configurare AWS CLI per ECR
@@ -163,6 +229,8 @@ deploy_sit:
     
     # Esegui lo script di deploy
     chmod +x aws/sit/scripts/deploy_module.sh
-    cd aws/sit && bash scripts/deploy_module.sh $MODULE_NAME
+    cd aws/sit && bash scripts/deploy_module.sh $MODULE_NAME $VERSION
   environment:
     name: sit
+    url: https://sit.auxdromos.example.com
+  when: manual
