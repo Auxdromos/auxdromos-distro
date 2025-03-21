@@ -11,12 +11,6 @@ stages:
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
 
-variables:
-  AWS_DEFAULT_REGION: "us-east-1"
-  AWS_ACCOUNT_ID: "463470955561"
-  ECR_REGISTRY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-  S3_BUCKET: "auxdromos-artifacts"
-
 extract_module_name:
   stage: prepare
   script: |
@@ -101,7 +95,7 @@ artifact_upload_s3:
       
       echo "Artefatti caricati con successo su S3: s3://$S3_BUCKET/$ARTIFACT_DIR/"
   only:
-    - develop
+    - main
   environment:
     name: sit
 
@@ -168,7 +162,7 @@ build_docker:
         done
       fi
   only:
-    - develop
+    - main
   environment:
     name: sit
 
@@ -196,6 +190,6 @@ deploy_sit:
       # Esegui il deploy
       ssh $EC2_USER@$EC2_HOST "cd /opt/auxdromos/aws/sit && ./scripts/deploy_module.sh $MODULE_NAME"
   only:
-    - develop
+    - main
   environment:
     name: sit
