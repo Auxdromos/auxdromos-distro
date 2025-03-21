@@ -47,22 +47,20 @@ check_version:
     - echo "DEBUG MODULE_NAME = $MODULE_NAME"
     - echo "DEBUG VERSION = $VERSION"
 
+    # --- ECCO IL COMANDO DI DEBUG ---
+    - echo "Verifico identità AWS con sts get-caller-identity..."
+    - aws sts get-caller-identity
+    # --------------------------------
+    
     # Se siamo su main, vietiamo SNAPSHOT e versioni già esistenti
-    - |
-      if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
-        if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
-          echo "Versione $VERSION non valida (SNAPSHOT) su main!"
-          exit 1
-        fi
-
-        # Facoltativo: controlliamo se la versione esiste già su S3
-        # NOTA: questa riga fallirà se credenziali o bucket non sono impostati correttamente.
-        FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
-        if [ "$FOUND" -gt 0 ]; then
-          echo "La versione $VERSION esiste già su S3! Interrompo la pipeline."
-          exit 1
-        fi
+    - if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then echo "On main"; fi
+    - FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
+    - echo "FOUND=$FOUND"
+    - if [[ "$CI_COMMIT_REF_NAME" == "main" && "$FOUND" -gt 0 ]]; then
+      echo "Version already exists, exiting";
+      exit 1;
       fi
+    - echo "End of check_version block"
   # Se vuoi eseguire la pipeline solo su main, aggiungi qui `only: [main]`
   # Se vuoi eseguirla anche su develop, lascialo così
 
