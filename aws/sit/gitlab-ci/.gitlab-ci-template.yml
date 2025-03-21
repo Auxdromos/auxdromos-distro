@@ -53,7 +53,6 @@ check_version:
       . module_name.env
     fi
 
-
     # Vietiamo l’uso di SNAPSHOT in main
     if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
       echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
@@ -64,8 +63,23 @@ check_version:
     if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
       echo "Errore: La versione '$VERSION' è già presente su ECR."
       exit 1
+    fi
+
+    # Verifichiamo se la versione esiste su S3
+    if aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --prefix "$MODULE_NAME/$VERSION/" > /dev/null 2>&1; then
+      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
     else
-      echo "Versione non ancora presente su ECR, procedo..."
+      FOUND=0
+    fi
+
+    echo "DEBUG FOUND = $FOUND" # Aggiunto per debug
+
+    # Esempio di controllo basato su $FOUND (adatta alla tua logica)
+    if [[ "$FOUND" -gt 0 ]]; then
+        echo "Versione già presente su S3. Interrompo la pipeline."
+        exit 1 # or handle it differently
+    else
+        echo "Versione non presente su S3. Procedo..."
     fi
 
 build:
