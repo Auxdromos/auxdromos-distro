@@ -82,6 +82,33 @@ check_version:
         echo "Versione non presente su S3. Procedo..."
     fi
 
+build:
+  stage: build
+  image: maven:3.9.9-amazoncorretto-17  # Usa l'immagine Maven appropriata
+  dependencies:
+    - extract_module_info
+    - check_version
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Build del modulo $MODULE_NAME..."
+    - mvn clean package -Psit -DskipTests
+    # Crea un file manifest che descrive questa build
+    - |
+      cat > target/build-info.json <<EOF
+      {
+        "moduleName": "$MODULE_NAME",
+        "version": "$VERSION",
+        "buildDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+        "branch": "$CI_COMMIT_REF_NAME",
+        "commitHash": "$CI_COMMIT_SHA"
+      }
+      EOF
+  artifacts:
+    paths:
+      - target/*.jar
+      - target/distribution/
+      - target/build-info.json
+
 test_project:
   stage: test
   script:
