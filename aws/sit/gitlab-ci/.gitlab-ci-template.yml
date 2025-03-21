@@ -2,41 +2,78 @@ image: maven:3.9.9-amazoncorretto-17
 
 stages:
   - prepare
+  - check_version
   - build
   - test
   - artifact_upload_s3
   - build_docker
   - deploy_sit
 
+# Inclusione eventuale di template GitLab per scanning o altro
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
-
-variables:
-  AWS_DEFAULT_REGION: "us-east-1"
-  AWS_ACCOUNT_ID: "463470955561"
-  ECR_REGISTRY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-  S3_BUCKET: "auxdromos-artifacts"
 
 extract_module_name:
   stage: prepare
   script: |
     echo "Estrazione del MODULE_NAME dal pom.xml..."
     export MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
-    if [ -z "$MODULE_NAME" ]; then echo "Errore: impossibile estrarre MODULE_NAME dal pom.xml"; exit 1; fi
+    if [ -z "$MODULE_NAME" ]; then 
+      echo "Errore: impossibile estrarre MODULE_NAME dal pom.xml"
+      exit 1
+    fi
     echo "MODULE_NAME estratto: $MODULE_NAME"
     echo "MODULE_NAME=$MODULE_NAME" >> module_name.env
     
     # Estrai anche la versione
     export VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
     echo "VERSION=$VERSION" >> module_name.env
+    echo "VERSION estratta: $VERSION"
   artifacts:
     reports:
       dotenv: module_name.env
+
+check_version:
+  stage: check_version
+  dependencies:
+    - extract_module_name
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  script: |
+    echo "Verifica della versione per il branch $CI_COMMIT_REF_NAME ..."
+
+    # Carichiamo VERSION dal file .env creato prima
+    if [ -f module_name.env ]; then
+      . module_name.env
+    fi
+
+    # Consentiamo la pipeline solo su main
+    if [[ "$CI_COMMIT_REF_NAME" != "main" ]]; then
+      echo "Branch non è 'main': interrompo la pipeline."
+      exit 1
+    fi
+
+    # 1) Vietiamo l’uso di SNAPSHOT in main
+    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
+      echo "Versione $VERSION non valida in main (SNAPSHOT non consentito)."
+      exit 1
+    fi
+
+    # 2) Verifichiamo se questa versione esiste già in ECR (quindi se è già rilasciata)
+    aws ecr describe-images \
+      --repository-name auxdromos-$MODULE_NAME \
+      --image-ids imageTag=$VERSION \
+      --region $AWS_DEFAULT_REGION && {
+      echo "La versione $VERSION risulta già rilasciata su ECR! Interrompo la pipeline."
+      exit 1
+    } || echo "Versione non ancora presente su ECR, procedo..."
 
 build:
   stage: build
   dependencies:
     - extract_module_name
+    - check_version
   script:
     - echo "Build del modulo $MODULE_NAME..."
     - mvn clean package -Psit -DskipTests
@@ -47,7 +84,7 @@ build:
         "moduleName": "$MODULE_NAME",
         "version": "$VERSION",
         "buildDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-        "branch": "develop",
+        "branch": "$CI_COMMIT_REF_NAME",
         "commitHash": "$CI_COMMIT_SHA"
       }
       EOF
@@ -74,34 +111,45 @@ artifact_upload_s3:
   dependencies:
     - build
     - extract_module_name
+    - check_version
   script:
     - |
       echo "Caricamento degli artefatti su S3..."
       
-      # Crea una struttura di directory più organizzata
       ARTIFACT_DIR="$MODULE_NAME/$VERSION"
       
       # Carica i JAR
       JARS=$(find target -name "*.jar" -type f)
       for jar in $JARS; do
-        aws s3 cp $jar s3://$S3_BUCKET/$ARTIFACT_DIR/$(basename $jar)
+        aws s3 cp "$jar" "s3://$S3_BUCKET/$ARTIFACT_DIR/$(basename $jar)"
       done
       
       # Carica build-info.json
-      aws s3 cp target/build-info.json s3://$S3_BUCKET/$ARTIFACT_DIR/build-info.json
+      aws s3 cp target/build-info.json "s3://$S3_BUCKET/$ARTIFACT_DIR/build-info.json"
       
       # Carica directory di distribuzione se presente
       if [ -d "target/distribution" ]; then
-        aws s3 cp target/distribution/ s3://$S3_BUCKET/$ARTIFACT_DIR/distribution/ --recursive
+        aws s3 cp target/distribution/ "s3://$S3_BUCKET/$ARTIFACT_DIR/distribution/" --recursive
       fi
       
-      # Crea/aggiorna anche un marker "latest" per facilitare l'accesso all'ultima versione
+      # Crea/aggiorna anche un marker "latest"
       echo "{\"latestVersion\": \"$VERSION\", \"updateTime\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > latest.json
-      aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json
+      aws s3 cp latest.json "s3://$S3_BUCKET/$MODULE_NAME/latest.json"
       
+      # Mantenere max 5 versioni su S3 (opzionale)
+      LIST=$(aws s3 ls "s3://$S3_BUCKET/$MODULE_NAME/" | grep PRE | awk '{print $2}' | sed 's#/##' | sort -r)
+      COUNT=0
+      for ver in $LIST; do
+        ((COUNT++))
+        if [ $COUNT -gt 5 ]; then
+          echo "Elimino la versione S3 più vecchia: $ver"
+          aws s3 rm "s3://$S3_BUCKET/$MODULE_NAME/$ver" --recursive
+        fi
+      done
+
       echo "Artefatti caricati con successo su S3: s3://$S3_BUCKET/$ARTIFACT_DIR/"
   only:
-    - develop
+    - main
   environment:
     name: sit
 
@@ -115,6 +163,7 @@ build_docker:
   dependencies:
     - build
     - extract_module_name
+    - check_version
   script:
     - |
       # Installa Docker
@@ -128,7 +177,6 @@ build_docker:
       aws ecr describe-repositories --repository-names auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION || \
         aws ecr create-repository --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION
       
-      # Per un modulo di distribuzione, potrebbe essere necessario un Dockerfile più complesso
       cat > Dockerfile <<EOF
       FROM amazoncorretto:17
       
@@ -138,37 +186,34 @@ build_docker:
       COPY target/build-info.json /app/
       
       WORKDIR /app
-      
-      # Configurazione dell'ambiente
       ENV APP_ENV=sit
       
-      # Punto di ingresso specifico per il modulo distro
       ENTRYPOINT ["java", "-jar", "$MODULE_NAME.jar"]
       EOF
       
       # Build dell'immagine Docker
       docker build -t auxdromos-$MODULE_NAME:$VERSION .
       
-      # Tag e push dell'immagine a ECR - sia con versione specifica che con latest
+      # Tag e push dell'immagine a ECR
       docker tag auxdromos-$MODULE_NAME:$VERSION $ECR_REGISTRY/auxdromos-$MODULE_NAME:$VERSION
       docker push $ECR_REGISTRY/auxdromos-$MODULE_NAME:$VERSION
       
       docker tag auxdromos-$MODULE_NAME:$VERSION $ECR_REGISTRY/auxdromos-$MODULE_NAME:latest
       docker push $ECR_REGISTRY/auxdromos-$MODULE_NAME:latest
       
-      # Gestione delle immagini vecchie
+      # Gestione delle immagini vecchie: ne teniamo 5
       IMAGES_TO_DELETE=$(aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION \
-        --query 'sort_by(imageDetails,& imagePushedAt)[:-10].imageDigest' --output text)
+        --query 'sort_by(imageDetails,& imagePushedAt)[:-5].imageDigest' --output text)
       
       if [ -n "$IMAGES_TO_DELETE" ]; then
         for digest in $IMAGES_TO_DELETE; do
-          echo "Eliminazione dell'immagine con digest: $digest"
+          echo "Elimino l'immagine con digest: $digest"
           aws ecr batch-delete-image --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION \
             --image-ids imageDigest=$digest
         done
       fi
   only:
-    - develop
+    - main
   environment:
     name: sit
 
@@ -179,6 +224,7 @@ deploy_sit:
     entrypoint: [""]
   dependencies:
     - extract_module_name
+    - check_version
   script:
     - |
       # Installa SSH client
@@ -186,16 +232,16 @@ deploy_sit:
       
       # Configura SSH key
       mkdir -p ~/.ssh
-      echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+      echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
       chmod 600 ~/.ssh/id_rsa
       echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
       
-      # Aggiorna script di deploy
+      # Aggiorna script di deploy (se serve)
       rsync -avz ./scripts/deploy_module.sh $EC2_USER@$EC2_HOST:/opt/auxdromos/aws/sit/scripts/
       
       # Esegui il deploy
       ssh $EC2_USER@$EC2_HOST "cd /opt/auxdromos/aws/sit && ./scripts/deploy_module.sh $MODULE_NAME"
   only:
-    - develop
+    - main
   environment:
     name: sit
