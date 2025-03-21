@@ -35,42 +35,52 @@ extract_module_info:
 
 check_version:
   stage: check_version
+  dependencies:
+    - extract_module_name
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
-  dependencies:
-    - extract_module_info
-  script:
-    # Abilita debug (stampa ogni comando) e termina subito se un comando fallisce
-    - set -ex
+  only:
+    - main
+  script: |
+    set -e
+    set -o pipefail
 
-    # Carica module_info.env, se esiste
-    - if [ -f module_info.env ]; then . module_info.env; fi
+    echo "Verifica della versione..."
 
-    # Stampa alcune info di debug
-    - echo "DEBUG Branch = $CI_COMMIT_REF_NAME"
-    - echo "DEBUG MODULE_NAME = $MODULE_NAME"
-    - echo "DEBUG VERSION = $VERSION"
+    # Carichiamo VERSION dal file .env creato prima
+    if [ -f module_name.env ]; then
+      . module_name.env
+    fi
 
-    # Verifica identità AWS, per essere sicuri delle credenziali
-    - echo "Verifico identità AWS con sts get-caller-identity..."
-    - aws sts get-caller-identity
+    # Vietiamo l’uso di SNAPSHOT in main
+    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
+      echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
+      exit 1
+    fi
 
-    # Se siamo su main, stampiamo un messaggio
-    - if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then echo "On main"; fi
+    # Verifichiamo se questa versione esiste già in ECR
+    if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
+      echo "Errore: La versione '$VERSION' è già presente su ECR."
+      exit 1
+    fi
 
-    # Esegui il ls su S3 e conta le righe
-    - FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
-    - echo "FOUND=$FOUND"
+    # Verifichiamo se la versione esiste su S3
+    if aws s3api head-bucket --bucket "$S3_BUCKET_NAME" --prefix "$MODULE_NAME/$VERSION/" > /dev/null 2>&1; then
+      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
+    else
+      FOUND=0
+    fi
 
-    # Se siamo su main e FOUND > 0, usciamo con errore
-    - if [[ "$CI_COMMIT_REF_NAME" == "main" && "$FOUND" -gt 0 ]]; then echo "Version already exists, exiting"; exit 1; fi
+    echo "DEBUG FOUND = $FOUND" # Aggiunto per debug
 
-    # Se arrivi qui, nessun errore
-    - echo "End of check_version block"
-
-  # Se vuoi eseguire la pipeline solo su main, aggiungi qui `only: [main]`
-  # Se vuoi eseguirla anche su develop, lascialo così
+    # Esempio di controllo basato su $FOUND (adatta alla tua logica)
+    if [[ "$FOUND" -gt 0 ]]; then
+        echo "Versione già presente su S3. Interrompo la pipeline."
+        exit 1 # or handle it differently
+    else
+        echo "Versione non presente su S3. Procedo..."
+    fi
 
 test_project:
   stage: test
