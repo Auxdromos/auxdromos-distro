@@ -1,7 +1,7 @@
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
   # Include il template comune per riutilizzare gli stage standardizzati
-  - local: .gitlab-ci-template.yml
+  - local: ./aws/sit/gitlab-ci/gitlab-ci-template.yml
 
 image: alpine:latest
 
