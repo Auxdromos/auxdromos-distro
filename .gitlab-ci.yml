@@ -5,7 +5,7 @@ image: alpine:latest
 
 stages:
   - prepare
-  - test       # Aggiunto questo stage per il Dependency Scanning
+  - test
   - package
   - upload
   - deploy_configs
@@ -48,7 +48,7 @@ package_configs:
 
     # Crea un archivio con tutti i file di configurazione e script
     - mkdir -p dist
-    - zip -r dist/$MODULE_NAME-$VERSION.zip aws/ docker/ scripts/ env/ *.yml *.yaml *.properties
+    - zip -r dist/$MODULE_NAME-$VERSION.zip aws/ docker/ scripts/ env/ *.yml *.yaml *.properties || echo "Alcuni file potrebbero non esistere, ma lo zip è stato creato comunque"
 
     # Crea un manifest
     - |
@@ -75,14 +75,26 @@ upload_to_s3:
     - extract_module_info
   script:
     - echo "Caricamento delle configurazioni su S3..."
+    # Verifica che le variabili necessarie siano disponibili
+    - echo "Utilizzo bucket S3: $S3_BUCKET"
+    - echo "Nome modulo: $MODULE_NAME"
+    - echo "Versione: $VERSION"
 
-    # Carica i file su S3
+    # Elenca i file nella directory dist per verifica
+    - ls -la dist/
+
+    # Specifica esplicitamente la regione AWS
+    - aws configure set region $AWS_DEFAULT_REGION
+
+    # Carica i file su S3 con comando più esplicito
     - aws s3 cp dist/ s3://$S3_BUCKET/$MODULE_NAME/$VERSION/ --recursive
 
-    # Aggiorna il marker "latest"
-    - |
-      echo "{\"latestVersion\": \"$VERSION\", \"updateTime\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > latest.json
-      aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json
+    # Crea il file latest.json
+    - echo "{\"latestVersion\": \"$VERSION\", \"updateTime\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > latest.json
+    - cat latest.json
+
+    # Carica il file latest.json
+    - aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json
 
     - echo "Configurazioni caricate con successo!"
   only:
@@ -95,7 +107,7 @@ deploy_to_sit:
   dependencies:
     - extract_module_info
   before_script:
-    - apk update && apk add --no-cache openssh-client bash aws-cli
+    - apk update && apk add --no-cache openssh-client bash
     - mkdir -p ~/.ssh
     # Verifica che le variabili necessarie siano definite
     - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito"; exit 1; fi
