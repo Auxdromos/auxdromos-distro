@@ -33,7 +33,7 @@ extract_module_info:
       fi
     - echo "MODULE_NAME=$MODULE_NAME" >> module_info.env
     - echo "VERSION=$VERSION" >> module_info.env
-    - echo "Modulo: $MODULE_NAME, Versione: $VERSION"
+    - 'echo "Modulo: $MODULE_NAME, Versione: $VERSION"'
   artifacts:
     reports:
       dotenv: module_info.env
