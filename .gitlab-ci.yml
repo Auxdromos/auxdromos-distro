@@ -62,14 +62,12 @@ upload_to_s3:
     - echo "DEBUG S3_BUCKET ${S3_BUCKET_NAME}"
     # Verifica la presenza del file dotenv e il suo contenuto
     - echo "DEBUG Listing current directory"
-    - ls -la
     - echo "DEBUG Contenuto di module_info.env (se presente)"
     - if [ -f module_info.env ]; then cat module_info.env; else echo "module_info.env non trovato"; fi
     # In ogni caso, se non sono già impostate, source il file
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "DEBUG MODULE_NAME ${MODULE_NAME}"
     - echo "DEBUG VERSION ${VERSION}"
-    - ls -la dist/
     - aws configure set region ${AWS_DEFAULT_REGION}
     - echo "DEBUG Esecuzione comando aws s3 cp dist/ s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/ --recursive"
     - aws s3 cp dist/ s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/ --recursive

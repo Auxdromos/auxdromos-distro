@@ -186,7 +186,7 @@ deploy_sit:
       
       # Configura SSH key
       mkdir -p ~/.ssh
-      echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+      echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
       chmod 600 ~/.ssh/id_rsa
       echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
       
