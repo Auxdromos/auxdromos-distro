@@ -60,12 +60,12 @@ upload_to_s3:
     - extract_module_info
   script:
     - echo "Caricamento delle configurazioni su S3..."
-    - echo "Utilizzo bucket S3 $S3_BUCKET - Nome modulo $MODULE_NAME Versione $VERSION"
+    - echo "Utilizzo bucket S3 $S3_BUCKET Nome modulo $MODULE_NAME Versione $VERSION"
     - ls -la dist/
-    - aws configure set region $AWS_DEFAULT_REGION
-    - "aws s3 cp dist/ s3://$S3_BUCKET/$MODULE_NAME/$VERSION/ --recursive"
-    - 'echo "{\"latestVersion\":\"$VERSION\",\"updateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > latest.json'
-    - "aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json"
+    - aws configure set region ${AWS_DEFAULT_REGION}
+    - aws s3 cp dist/ s3://${S3_BUCKET}/${MODULE_NAME}/${VERSION}/ --recursive
+    - echo "{\"latestVersion\":\"${VERSION}\",\"updateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > latest.json
+    - aws s3 cp latest.json s3://${S3_BUCKET}/${MODULE_NAME}/latest.json
     - echo "Configurazioni caricate con successo!"
   only:
     - develop
