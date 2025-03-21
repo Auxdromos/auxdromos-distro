@@ -44,9 +44,7 @@ package_configs:
     - echo "Creazione del pacchetto di configurazione $MODULE_NAME versione $VERSION..."
     - apk add --no-cache zip
     - mkdir -p dist
-    # Zip command simplified
     - 'zip -r dist/$MODULE_NAME-$VERSION.zip aws/ docker/ scripts/ env/ *.yml *.yaml *.properties || echo "Nota: alcuni file potrebbero non esistere"'
-    # Simplified manifest creation
     - 'echo "{\"moduleName\": \"$MODULE_NAME\", \"version\": \"$VERSION\", \"buildDate\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"branch\": \"$CI_COMMIT_REF_NAME\", \"commitHash\": \"$CI_COMMIT_SHA\"}" > dist/manifest.json'
   dependencies:
     - extract_module_info
@@ -67,10 +65,9 @@ upload_to_s3:
     - echo "Versione: $VERSION"
     - ls -la dist/
     - aws configure set region $AWS_DEFAULT_REGION
-    - aws s3 cp dist/ s3://$S3_BUCKET/$MODULE_NAME/$VERSION/ --recursive
-    # Creating latest.json without complex date format
+    - "aws s3 cp dist/ s3://$S3_BUCKET/$MODULE_NAME/$VERSION/ --recursive"
     - 'echo "{\"latestVersion\":\"$VERSION\",\"updateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > latest.json'
-    - aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json
+    - "aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json"
     - echo "Configurazioni caricate con successo!"
   only:
     - develop
@@ -93,13 +90,11 @@ deploy_to_sit:
     - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
   script:
     - echo "Aggiornamento delle configurazioni sull'ambiente SIT..."
-    # Simplified script creation
     - echo "#!/bin/bash" > update_configs.sh
     - echo "set -e" >> update_configs.sh
     - echo "cd ~/auxdromos" >> update_configs.sh
     - echo "git pull" >> update_configs.sh
     - echo "echo \"Configurazioni aggiornate con successo!\"" >> update_configs.sh
-    # Execute the script
     - scp update_configs.sh $EC2_USER@$EC2_HOST:/tmp/
     - ssh $EC2_USER@$EC2_HOST "bash /tmp/update_configs.sh"
     - echo "Configurazioni aggiornate su SIT con successo!"
