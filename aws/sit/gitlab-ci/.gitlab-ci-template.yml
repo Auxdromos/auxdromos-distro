@@ -169,12 +169,16 @@ artifact_upload_s3:
 
 build_docker:
   stage: build_docker
+  tags:
+    - ec2-shell
   dependencies:
     - extract_module_name
     - artifact_upload_s3
   only:
     - main
   script: |
+    set -e  # Interrompe l'esecuzione in caso di errore
+    
     if [ -f module_name.env ]; then
       . module_name.env
     fi
@@ -187,16 +191,30 @@ build_docker:
     
     echo "Costruzione dell'immagine Docker per $MODULE_NAME:$VERSION"
     
+    # Verifica configurazione AWS
+    aws --version
+    aws sts get-caller-identity
+    docker --version
+    
     # Configurazione AWS CLI per ECR
     aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
     
+    # Crea repository ECR se non esiste
+    aws ecr describe-repositories --repository-names auxdromos-$MODULE_NAME || aws ecr create-repository --repository-name auxdromos-$MODULE_NAME
+    
     # Recupera gli artefatti da S3
+    mkdir -p ./artifacts/
     aws s3 cp "s3://$S3_BUCKET_NAME/$MODULE_NAME/$VERSION/" ./artifacts/ --recursive
+    
+    # Copia il Dockerfile nella directory di lavoro se non è presente
+    if [ ! -f Dockerfile ] && [ -f ./artifacts/Dockerfile ]; then
+      cp ./artifacts/Dockerfile ./
+    fi
     
     # Costruisci e pubblica l'immagine Docker
     docker build -t auxdromos-$MODULE_NAME:$VERSION .
     docker tag auxdromos-$MODULE_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
-    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
+    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION    
 
 deploy_sit:
   stage: deploy_sit
