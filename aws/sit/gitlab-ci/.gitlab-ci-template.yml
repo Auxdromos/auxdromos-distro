@@ -5,16 +5,17 @@ stages:
   - build
   - test
   - artifact_upload_s3
-  - check_version
+  - build_docker
   - deploy_sit
 
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
 
 variables:
-  S3_BUCKET_NAME: "auxdromos-artifacts-unique"
   AWS_DEFAULT_REGION: "us-east-1"
-  MODULES_TO_REFRESH: "rdbms gateway backend idp"
+  AWS_ACCOUNT_ID: "463470955561"
+  ECR_REGISTRY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+  S3_BUCKET: "auxdromos-artifacts"
 
 extract_module_name:
   stage: prepare
@@ -24,6 +25,10 @@ extract_module_name:
     if [ -z "$MODULE_NAME" ]; then echo "Errore: impossibile estrarre MODULE_NAME dal pom.xml"; exit 1; fi
     echo "MODULE_NAME estratto: $MODULE_NAME"
     echo "MODULE_NAME=$MODULE_NAME" >> module_name.env
+    
+    # Estrai anche la versione
+    export VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+    echo "VERSION=$VERSION" >> module_name.env
   artifacts:
     reports:
       dotenv: module_name.env
@@ -35,14 +40,28 @@ build:
   script:
     - echo "Build del modulo $MODULE_NAME..."
     - mvn clean package -Psit -DskipTests
+    # Crea un file manifest che descrive questa build
+    - |
+      cat > target/build-info.json <<EOF
+      {
+        "moduleName": "$MODULE_NAME",
+        "version": "$VERSION",
+        "buildDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+        "branch": "develop",
+        "commitHash": "$CI_COMMIT_SHA"
+      }
+      EOF
   artifacts:
     paths:
       - target/*.jar
+      - target/distribution/
+      - target/build-info.json
 
 test:
   stage: test
   dependencies:
     - extract_module_name
+    - build
   script:
     - echo "Test del modulo $MODULE_NAME..."
     - mvn test
@@ -56,138 +75,127 @@ artifact_upload_s3:
     - build
     - extract_module_name
   script:
-    - set -x
-    - VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
-    - echo "Versione rilevata - $VERSION - Modulo $MODULE_NAME - $MODULE_NAME-$VERSION.jar"
-    - echo "Contenuto della directory target:"
-    - ls -la target
-    # Cerca il file jar usando un pattern che includa eventuali suffissi
-    - JAR_FILE=$(ls target/$MODULE_NAME-$VERSION*.jar)
-    - echo "File jar individuato $JAR_FILE"
-    - aws s3 cp $JAR_FILE s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION
     - |
-      files_to_delete=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | head -n -5 | awk '{print $4}')
-      if [ -n "$files_to_delete" ]; then
-        for file in $files_to_delete; do
-          echo "Eliminazione del file: $file"
-          aws s3 rm s3://$S3_BUCKET_NAME/$MODULE_NAME/$file --region $AWS_DEFAULT_REGION
-        done
-      else
-        echo "Meno di 5 versioni presenti, nessun file eliminato"
+      echo "Caricamento degli artefatti su S3..."
+      
+      # Crea una struttura di directory più organizzata
+      ARTIFACT_DIR="$MODULE_NAME/$VERSION"
+      
+      # Carica i JAR
+      JARS=$(find target -name "*.jar" -type f)
+      for jar in $JARS; do
+        aws s3 cp $jar s3://$S3_BUCKET/$ARTIFACT_DIR/$(basename $jar)
+      done
+      
+      # Carica build-info.json
+      aws s3 cp target/build-info.json s3://$S3_BUCKET/$ARTIFACT_DIR/build-info.json
+      
+      # Carica directory di distribuzione se presente
+      if [ -d "target/distribution" ]; then
+        aws s3 cp target/distribution/ s3://$S3_BUCKET/$ARTIFACT_DIR/distribution/ --recursive
       fi
-    - exit 0
+      
+      # Crea/aggiorna anche un marker "latest" per facilitare l'accesso all'ultima versione
+      echo "{\"latestVersion\": \"$VERSION\", \"updateTime\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > latest.json
+      aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json
+      
+      echo "Artefatti caricati con successo su S3: s3://$S3_BUCKET/$ARTIFACT_DIR/"
   only:
     - develop
   environment:
     name: sit
 
-check_version:
-  stage: check_version
+build_docker:
+  stage: build_docker
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  services:
+    - docker:dind
   dependencies:
+    - build
     - extract_module_name
-  image: amazon/aws-cli:latest
-  only:
-    - main
   script:
     - |
-      set -x
-      NEW_VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
-      echo "Nuova versione rilevata: $NEW_VERSION"
+      # Installa Docker
+      amazon-linux-extras install docker
+      service docker start
       
-      # Controlla se la versione contiene "SNAPSHOT"
-      if [[ "$NEW_VERSION" == *"SNAPSHOT"* ]]; then
-        echo "Errore: la versione $NEW_VERSION è una versione SNAPSHOT e non può essere rilasciata sul ramo main"
-        exit 1
+      # Autenticazione ad AWS ECR
+      aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+      
+      # Creare il repository ECR se non esiste
+      aws ecr describe-repositories --repository-names auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION || \
+        aws ecr create-repository --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION
+      
+      # Per un modulo di distribuzione, potrebbe essere necessario un Dockerfile più complesso
+      cat > Dockerfile <<EOF
+      FROM amazoncorretto:17
+      
+      # Copia i file di distribuzione
+      COPY target/*.jar /app/
+      COPY target/distribution/ /app/distribution/
+      COPY target/build-info.json /app/
+      
+      WORKDIR /app
+      
+      # Configurazione dell'ambiente
+      ENV APP_ENV=sit
+      
+      # Punto di ingresso specifico per il modulo distro
+      ENTRYPOINT ["java", "-jar", "$MODULE_NAME.jar"]
+      EOF
+      
+      # Build dell'immagine Docker
+      docker build -t auxdromos-$MODULE_NAME:$VERSION .
+      
+      # Tag e push dell'immagine a ECR - sia con versione specifica che con latest
+      docker tag auxdromos-$MODULE_NAME:$VERSION $ECR_REGISTRY/auxdromos-$MODULE_NAME:$VERSION
+      docker push $ECR_REGISTRY/auxdromos-$MODULE_NAME:$VERSION
+      
+      docker tag auxdromos-$MODULE_NAME:$VERSION $ECR_REGISTRY/auxdromos-$MODULE_NAME:latest
+      docker push $ECR_REGISTRY/auxdromos-$MODULE_NAME:latest
+      
+      # Gestione delle immagini vecchie
+      IMAGES_TO_DELETE=$(aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION \
+        --query 'sort_by(imageDetails,& imagePushedAt)[:-10].imageDigest' --output text)
+      
+      if [ -n "$IMAGES_TO_DELETE" ]; then
+        for digest in $IMAGES_TO_DELETE; do
+          echo "Eliminazione dell'immagine con digest: $digest"
+          aws ecr batch-delete-image --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION \
+            --image-ids imageDigest=$digest
+        done
       fi
-      
-      CURRENT_FILE=$(aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/ --region $AWS_DEFAULT_REGION | awk '{print $4}' | sort -V | tail -n1)
-      
-      if [ -n "$CURRENT_FILE" ]; then
-        CURRENT_VERSION=$(echo "$CURRENT_FILE" | sed "s/$MODULE_NAME-//; s/\.jar//")
-        echo "Versione attualmente presente su S3: $CURRENT_VERSION"
-      else
-        echo "Nessuna versione presente su S3."
-      fi
-      
-      if [ -n "$CURRENT_FILE" ]; then
-        if [ "$CURRENT_VERSION" = "$NEW_VERSION" ]; then
-          echo "Errore: la nuova versione ($NEW_VERSION) è la stessa di quella presente ($CURRENT_VERSION)"
-          exit 1
-        fi
-      
-        SORTED=$(printf '%s\n' "$CURRENT_VERSION" "$NEW_VERSION" | sort -V | head -n1)
-        if [ "$SORTED" = "$NEW_VERSION" ]; then
-          echo "Errore: la nuova versione ($NEW_VERSION) non è successiva a quella presente ($CURRENT_VERSION)"
-          exit 1
-        fi
-      fi
-      
-      aws s3 ls s3://$S3_BUCKET_NAME/$MODULE_NAME/$MODULE_NAME-$NEW_VERSION.jar --region $AWS_DEFAULT_REGION
-      if [ $? -eq 0 ]; then
-        echo "Errore: la versione $NEW_VERSION è già presente su S3."
-        exit 1
-      else
-        echo "La versione $NEW_VERSION non è presente su S3, procedo."
-      fi
-
-deploy_sit:
-  stage: deploy_sit
-  script:
-    - |
-      # Carica le variabili d'ambiente necessarie
-      source "env/deploy.env"
-      
-      # Verifica se Keycloak è in esecuzione
-      KEYCLOAK_RUNNING=$(ssh $EC2_USER@$EC2_HOST "docker ps | grep -q 'keycloak-auxdromos' && echo 'true' || echo 'false'")
-      
-      # Leggi il nome del modulo corrente
-      CURRENT_MODULE="$MODULE_NAME"
-      
-      if [ "$KEYCLOAK_RUNNING" = "false" ]; then
-        echo "Keycloak non è attivo. Verrà deployato prima di procedere..."
-        ./deploy_module.sh "$CURRENT_MODULE"
-      else
-        # Keycloak è già attivo, facciamo il deploy solo del modulo corrente
-        echo "Deploy del modulo $CURRENT_MODULE..."
-        ./deploy_module.sh "$CURRENT_MODULE"
-      fi
-  dependencies:
-    - extract_module_name
   only:
-    - main
+    - develop
   environment:
     name: sit
 
-refresh-services:
-  stage: refresh
-  before_script:
-    - mkdir -p ~/.ssh
-    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-    - chmod 600 ~/.ssh/id_rsa
-    - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+deploy_sit:
+  stage: deploy_sit
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  dependencies:
+    - extract_module_name
   script:
-    - echo "🔄 Avvio refresh delle configurazioni su AWS..."
     - |
-      ssh -i ~/.ssh/id_rsa $EC2_USER@$EC2_HOST << 'EOF'
-        for service in $MODULES_TO_REFRESH; do
-          echo "🔹 Tentativo di refresh per $service su AWS..."
-          success=false
-          for i in {1..3}; do
-            if curl -X POST http://$service:8080/config/refresh --max-time 5 --silent --fail; then
-              echo "✅ Refresh riuscito per $service su AWS!"
-              success=true
-              break
-            else
-              echo "⚠ Tentativo $i fallito per $service... Riprovo in 5 secondi"
-              sleep 5
-            fi
-          done
-          if [ "$success" = false ]; then
-            echo "❌ Errore critico: il servizio $service su AWS non ha risposto dopo 3 tentativi!"
-            exit 1
-          fi
-        done
-      EOF
+      # Installa SSH client
+      yum install -y openssh-clients
+      
+      # Configura SSH key
+      mkdir -p ~/.ssh
+      echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+      chmod 600 ~/.ssh/id_rsa
+      echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+      
+      # Aggiorna script di deploy
+      rsync -avz ./scripts/deploy_module.sh $EC2_USER@$EC2_HOST:/opt/auxdromos/aws/sit/scripts/
+      
+      # Esegui il deploy
+      ssh $EC2_USER@$EC2_HOST "cd /opt/auxdromos/aws/sit && ./scripts/deploy_module.sh $MODULE_NAME"
   only:
-    - main
-  retry: 2
+    - develop
+  environment:
+    name: sit
