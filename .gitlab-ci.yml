@@ -1,6 +1,6 @@
 include:
   - template: Security/Dependency-Scanning.gitlab-ci.yml
-  - local: ./aws/sit/gitlab-ci/.gitlab-ci-template.yml
+  - local: aws/sit/gitlab-ci/.gitlab-ci-template.yml
 
 image: alpine:latest
 
