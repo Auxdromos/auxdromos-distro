@@ -137,3 +137,32 @@ artifact_upload_s3:
       if [ -d "target/distribution" ]; then
         aws s3 cp target/distribution/ "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/distribution/" --recursive
       fi
+
+deploy_sit:
+  stage: deploy_sit
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  dependencies:
+    - extract_module_info  # Usa la versione corretta del job che crea il file .env
+  only:
+    - main
+  script:
+    - echo "Esecuzione del deploy in ambiente SIT..."
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Modulo da deployare: $MODULE_NAME"
+
+    # Installa Docker e Docker Compose
+    - amazon-linux-extras install docker
+    - curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    - chmod +x /usr/local/bin/docker-compose
+    - systemctl start docker || echo "Docker service might not be available, trying to proceed anyway"
+
+    # Configurare AWS CLI per ECR
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+    # Esegui lo script di deploy
+    - chmod +x aws/sit/scripts/deploy_module.sh
+    - cd aws/sit && bash scripts/deploy_module.sh $MODULE_NAME
+  environment:
+    name: sit
