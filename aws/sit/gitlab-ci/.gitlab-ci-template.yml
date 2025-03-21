@@ -233,4 +233,3 @@ deploy_sit:
   environment:
     name: sit
     url: https://sit.auxdromos.example.com
-  when: manual
