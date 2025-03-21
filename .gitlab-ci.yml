@@ -51,16 +51,7 @@ package_configs:
     - zip -r dist/$MODULE_NAME-$VERSION.zip aws/ docker/ scripts/ env/ *.yml *.yaml *.properties || echo "Alcuni file potrebbero non esistere, ma lo zip è stato creato comunque"
 
     # Crea un manifest
-    - |
-      cat > dist/manifest.json <<EOF
-      {
-        "moduleName": "$MODULE_NAME",
-        "version": "$VERSION",
-        "buildDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-        "branch": "$CI_COMMIT_REF_NAME",
-        "commitHash": "$CI_COMMIT_SHA"
-      }
-      EOF
+    - echo "{\"moduleName\": \"$MODULE_NAME\", \"version\": \"$VERSION\", \"buildDate\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\", \"branch\": \"$CI_COMMIT_REF_NAME\", \"commitHash\": \"$CI_COMMIT_SHA\"}" > dist/manifest.json
   dependencies:
     - extract_module_info
   artifacts:
@@ -90,8 +81,7 @@ upload_to_s3:
     - aws s3 cp dist/ s3://$S3_BUCKET/$MODULE_NAME/$VERSION/ --recursive
 
     # Crea il file latest.json
-    - echo "{\"latestVersion\": \"$VERSION\", \"updateTime\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > latest.json
-    - cat latest.json
+    - echo "{\"latestVersion\": \"$VERSION\", \"updateTime\": \"$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\"}" > latest.json
 
     # Carica il file latest.json
     - aws s3 cp latest.json s3://$S3_BUCKET/$MODULE_NAME/latest.json
@@ -123,7 +113,7 @@ deploy_to_sit:
 
     # Crea uno script di aggiornamento delle configurazioni
     - |
-      cat > update_configs.sh << 'EOF'
+      cat > update_configs.sh << EOF
       #!/bin/bash
       set -e
       
@@ -137,7 +127,7 @@ deploy_to_sit:
 
     # Copia ed esegui lo script
     - scp update_configs.sh $EC2_USER@$EC2_HOST:/tmp/
-    - ssh $EC2_USER@$EC2_HOST 'bash /tmp/update_configs.sh'
+    - ssh $EC2_USER@$EC2_HOST "bash /tmp/update_configs.sh"
 
     - echo "Configurazioni aggiornate su SIT con successo!"
   only:
