@@ -59,7 +59,7 @@ upload_to_s3:
     - set -x
     # Visualizza variabili di ambiente di base
     - echo "DEBUG AWS_DEFAULT_REGION ${AWS_DEFAULT_REGION}"
-    - echo "DEBUG S3_BUCKET ${S3_BUCKET}"
+    - echo "DEBUG S3_BUCKET ${S3_BUCKET_NAME}"
     # Verifica la presenza del file dotenv e il suo contenuto
     - echo "DEBUG Listing current directory"
     - ls -la
@@ -71,11 +71,11 @@ upload_to_s3:
     - echo "DEBUG VERSION ${VERSION}"
     - ls -la dist/
     - aws configure set region ${AWS_DEFAULT_REGION}
-    - echo "DEBUG Esecuzione comando aws s3 cp dist/ s3://${S3_BUCKET}/${MODULE_NAME}/${VERSION}/ --recursive"
-    - aws s3 cp dist/ s3://${S3_BUCKET}/${MODULE_NAME}/${VERSION}/ --recursive
+    - echo "DEBUG Esecuzione comando aws s3 cp dist/ s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/ --recursive"
+    - aws s3 cp dist/ s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/ --recursive
     - echo "{\"latestVersion\":\"${VERSION}\",\"updateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > latest.json
-    - echo "DEBUG Esecuzione comando aws s3 cp latest.json s3://${S3_BUCKET}/${MODULE_NAME}/latest.json"
-    - aws s3 cp latest.json s3://${S3_BUCKET}/${MODULE_NAME}/latest.json
+    - echo "DEBUG Esecuzione comando aws s3 cp latest.json s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest.json"
+    - aws s3 cp latest.json s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest.json
     - echo "Configurazioni caricate con successo!"
   only:
     - develop
