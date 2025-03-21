@@ -10,11 +10,6 @@ stages:
   - upload
   - deploy_configs
 
-variables:
-  AWS_DEFAULT_REGION: "us-east-1"
-  AWS_ACCOUNT_ID: "463470955561"
-  S3_BUCKET: "auxdromos-artifacts"
-
 extract_module_info:
   stage: prepare
   script:
