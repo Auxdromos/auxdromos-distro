@@ -109,18 +109,16 @@ build:
       - target/distribution/
       - target/build-info.json
 
-test_project:
+test:
   stage: test
-  script:
-    - set -x
-    - echo "Esecuzione test / validazioni..."
-    - echo "Ad esempio, puoi controllare sintassi di file .yml, .properties, ecc."
-  needs:
+  image: maven:3.9.9-amazoncorretto-17
+  dependencies:
     - extract_module_info
-    - check_version
-  only:
-    - develop
-    - main
+    - build
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Test del modulo $MODULE_NAME..."
+    - mvn test
 
 package_configs:
   stage: package
