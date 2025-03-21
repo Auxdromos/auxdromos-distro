@@ -7,9 +7,13 @@ image: alpine:latest
 stages:
   - prepare
   - check_version
+  - build         # Aggiunto per supportare i job dal template
   - test
   - package
+  - artifact_upload_s3  # Aggiunto per supportare i job dal template
+  - build_docker        # Aggiunto per supportare i job dal template
   - upload
+  - deploy_sit          # Aggiunto per supportare i job dal template
   - deploy_configs
 
 extract_module_info:
