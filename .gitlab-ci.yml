@@ -54,7 +54,9 @@ package_configs:
 
 upload_to_s3:
   stage: upload
-  image: amazon/aws-cli:latest
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
   dependencies:
     - package_configs
     - extract_module_info
@@ -83,8 +85,6 @@ upload_to_s3:
   only:
     - develop
     - main
-
-
 
 deploy_to_sit:
   stage: deploy_configs
