@@ -41,26 +41,34 @@ check_version:
   dependencies:
     - extract_module_info
   script:
-    - set -ex  # Abilita debug e termina subito se un comando fallisce
+    # Abilita debug (stampa ogni comando) e termina subito se un comando fallisce
+    - set -ex
+
+    # Carica module_info.env, se esiste
     - if [ -f module_info.env ]; then . module_info.env; fi
+
+    # Stampa alcune info di debug
     - echo "DEBUG Branch = $CI_COMMIT_REF_NAME"
     - echo "DEBUG MODULE_NAME = $MODULE_NAME"
     - echo "DEBUG VERSION = $VERSION"
 
-    # --- ECCO IL COMANDO DI DEBUG ---
+    # Verifica identità AWS, per essere sicuri delle credenziali
     - echo "Verifico identità AWS con sts get-caller-identity..."
     - aws sts get-caller-identity
-    # --------------------------------
-    
-    # Se siamo su main, vietiamo SNAPSHOT e versioni già esistenti
+
+    # Se siamo su main, stampiamo un messaggio
     - if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then echo "On main"; fi
+
+    # Esegui il ls su S3 e conta le righe
     - FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
     - echo "FOUND=$FOUND"
-    - if [[ "$CI_COMMIT_REF_NAME" == "main" && "$FOUND" -gt 0 ]]; then
-      echo "Version already exists, exiting";
-      exit 1;
-      fi
+
+    # Se siamo su main e FOUND > 0, usciamo con errore
+    - if [[ "$CI_COMMIT_REF_NAME" == "main" && "$FOUND" -gt 0 ]]; then echo "Version already exists, exiting"; exit 1; fi
+
+    # Se arrivi qui, nessun errore
     - echo "End of check_version block"
+
   # Se vuoi eseguire la pipeline solo su main, aggiungi qui `only: [main]`
   # Se vuoi eseguirla anche su develop, lascialo così
 
