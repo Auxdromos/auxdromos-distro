@@ -85,7 +85,6 @@ deploy_to_sit:
   dependencies:
     - extract_module_info
   before_script:
-    - echo "Lunghezza EC2_PRIVATE_KEY $(echo "$EC2_PRIVATE_KEY" | wc -c)"
     - apk update && apk add --no-cache openssh-client bash
     - mkdir -p ~/.ssh
     - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito"; exit 1; fi
@@ -94,7 +93,7 @@ deploy_to_sit:
     - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
     - if [ ! -s ~/.ssh/id_rsa ]; then echo "La chiave privata SSH è vuota"; exit 1; fi
     - chmod 600 ~/.ssh/id_rsa
-    - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+    - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || true
   script:
     - echo "Aggiornamento delle configurazioni sull'ambiente SIT..."
     - echo "#!/bin/bash" > update_configs.sh
@@ -103,9 +102,10 @@ deploy_to_sit:
     - echo "git pull" >> update_configs.sh
     - echo "echo \"Configurazioni aggiornate con successo!\"" >> update_configs.sh
     - scp update_configs.sh $EC2_USER@$EC2_HOST:/tmp/
-    - ssh $EC2_USER@$EC2_HOST "bash /tmp/update_configs.sh"
+    - ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "bash /tmp/update_configs.sh"
     - echo "Configurazioni aggiornate su SIT con successo!"
   only:
     - develop
   environment:
     name: sit
+
