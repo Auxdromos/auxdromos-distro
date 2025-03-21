@@ -59,20 +59,25 @@ upload_to_s3:
     - package_configs
     - extract_module_info
   script:
-    - echo "DEBUG Inizio upload_to_s3"
-    - echo "DEBUG Visualizzo tutte le variabili d'ambiente:"
-    - env
-    - echo "DEBUG Contenuto di module_info.env:"
+    - set -x
+    # Visualizza variabili di ambiente di base
+    - echo "DEBUG AWS_DEFAULT_REGION ${AWS_DEFAULT_REGION}"
+    - echo "DEBUG S3_BUCKET ${S3_BUCKET}"
+    # Verifica la presenza del file dotenv e il suo contenuto
+    - echo "DEBUG Listing current directory"
+    - ls -la
+    - echo "DEBUG Contenuto di module_info.env (se presente)"
     - if [ -f module_info.env ]; then cat module_info.env; else echo "module_info.env non trovato"; fi
-    - echo "Sourcing module_info.env..."
+    # In ogni caso, se non sono già impostate, source il file
     - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "DEBUG Valore di S3_BUCKET $S3_BUCKET DEBUG Valore di MODULE_NAME $MODULE_NAME DEBUG Valore di VERSION $VERSION"
+    - echo "DEBUG MODULE_NAME ${MODULE_NAME}"
+    - echo "DEBUG VERSION ${VERSION}"
     - ls -la dist/
     - aws configure set region ${AWS_DEFAULT_REGION}
-    - echo "Esecuzione comando aws s3 cp dist/ s3://${S3_BUCKET}/${MODULE_NAME}/${VERSION}/ --recursive"
+    - echo "DEBUG Esecuzione comando aws s3 cp dist/ s3://${S3_BUCKET}/${MODULE_NAME}/${VERSION}/ --recursive"
     - aws s3 cp dist/ s3://${S3_BUCKET}/${MODULE_NAME}/${VERSION}/ --recursive
     - echo "{\"latestVersion\":\"${VERSION}\",\"updateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > latest.json
-    - echo "Esecuzione comando aws s3 cp latest.json s3://${S3_BUCKET}/${MODULE_NAME}/latest.json"
+    - echo "DEBUG Esecuzione comando aws s3 cp latest.json s3://${S3_BUCKET}/${MODULE_NAME}/latest.json"
     - aws s3 cp latest.json s3://${S3_BUCKET}/${MODULE_NAME}/latest.json
     - echo "Configurazioni caricate con successo!"
   only:
