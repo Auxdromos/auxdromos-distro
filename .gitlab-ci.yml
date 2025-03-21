@@ -41,31 +41,37 @@ check_version:
   dependencies:
     - extract_module_info
   script:
-    - |
-      if [ -f module_info.env ]; then . module_info.env; fi
+    - set -ex  # Abilita debug e termina subito se un comando fallisce
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "DEBUG Branch = $CI_COMMIT_REF_NAME"
+    - echo "DEBUG MODULE_NAME = $MODULE_NAME"
+    - echo "DEBUG VERSION = $VERSION"
 
-      # Se siamo su main, vietiamo SNAPSHOT e versioni già esistenti
+    # Se siamo su main, vietiamo SNAPSHOT e versioni già esistenti
+    - |
       if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
         if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
           echo "Versione $VERSION non valida (SNAPSHOT) su main!"
           exit 1
         fi
-      
+
         # Facoltativo: controlliamo se la versione esiste già su S3
+        # NOTA: questa riga fallirà se credenziali o bucket non sono impostati correttamente.
         FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" | wc -l)
         if [ "$FOUND" -gt 0 ]; then
           echo "La versione $VERSION esiste già su S3! Interrompo la pipeline."
           exit 1
         fi
       fi
-  # Se vuoi eseguire la pipeline su develop e main, non mettere constraints qui
-  # Se vuoi solo main, aggiungi: only: [main]
+  # Se vuoi eseguire la pipeline solo su main, aggiungi qui `only: [main]`
+  # Se vuoi eseguirla anche su develop, lascialo così
 
 test_project:
   stage: test
   script:
+    - set -x
     - echo "Esecuzione test / validazioni..."
-    - echo "Ad esempio controlla sintassi di file .yml, .properties, ecc."
+    - echo "Ad esempio, puoi controllare sintassi di file .yml, .properties, ecc."
   needs:
     - extract_module_info
     - check_version
@@ -76,6 +82,8 @@ test_project:
 package_configs:
   stage: package
   script:
+    - set -x
+    - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
     - apk add --no-cache zip
     - mkdir -p dist
@@ -103,12 +111,14 @@ upload_to_s3:
   script:
     - set -x
     - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "DEBUG MODULE_NAME=$MODULE_NAME, VERSION=$VERSION"
     - aws configure set region "${AWS_DEFAULT_REGION}"
     - echo "Caricamento su S3 in s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
     - aws s3 cp dist/ "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" --recursive
+
     - echo "{\"latestVersion\":\"${VERSION}\",\"updateTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > latest.json
     - aws s3 cp latest.json "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest.json"
-    
+
     # Mantieni max 5 versioni
     - LIST=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" | grep PRE | awk '{print $2}' | sed 's#/##' | sort -r)
     - COUNT=0
@@ -143,6 +153,8 @@ deploy_to_sit:
     - chmod 600 ~/.ssh/id_rsa
     - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || true
   script:
+    - set -x
+    - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Aggiornamento delle configurazioni sull'ambiente SIT..."
     - echo "#!/bin/bash" > update_configs.sh
     - echo "set -e" >> update_configs.sh
