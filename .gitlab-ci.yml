@@ -133,19 +133,19 @@ package_configs:
     - main
 
 upload_to_s3:
-  stage: upload_to_s3  # assumi che questo sia lo stage, modificalo se diverso
+  stage: upload_to_s3  # Corretto da "uploa" a "upload_to_s3"
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
   dependencies:
-    - build  # assumo che dipenda da build, adatta secondo le tue esigenze
-    - extract_module_name  # per ottenere MODULE_NAME e VERSION
+    - extract_module_info  # Corretto da "extract_module_name" a "extract_module_info"
+    - package_configs      # Aggiunto per dipendere dal job che crea il pacchetto in 'dist/'
   script: |
     echo "Caricamento degli artefatti su S3..."
     
     # Carica le variabili dall'environment file
-    if [ -f module_name.env ]; then
-      . module_name.env
+    if [ -f module_info.env ]; then
+      . module_info.env
     fi
     
     # Determina il percorso di destinazione in base al branch
@@ -155,9 +155,9 @@ upload_to_s3:
       S3_DESTINATION="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
     fi
     
-    # Esegui il caricamento su S3 (adatta questo alle tue esigenze specifiche)
+    # Esegui il caricamento su S3
     echo "Caricamento su ${S3_DESTINATION}..."
-    aws s3 cp --recursive artifacts/ ${S3_DESTINATION}
+    aws s3 cp --recursive dist/ ${S3_DESTINATION}
     
     # Funzione per pulire le versioni, mantenendo solo le ultime N
     cleanup_versions() {
@@ -198,3 +198,6 @@ upload_to_s3:
     fi
     
     echo "Operazione di upload e pulizia completata con successo"
+  only:
+    - develop
+    - main
