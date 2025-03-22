@@ -246,61 +246,56 @@ build_docker:
 
 deploy_sit:
   stage: deploy_sit
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
-  services:
-    - name: docker:dind
-      alias: docker
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""  # Disabilita TLS per semplicità in ambiente di test
+  image: amazonlinux:2
   dependencies:
     - extract_module_name
-    - build
-  script: |
-    echo "Esecuzione del deploy in ambiente SIT..."
-    
-    # Carica le variabili dall'environment file
-    if [ -f module_name.env ]; then
-      . module_name.env
-    fi
-    
-    echo "Modulo da deployare: $MODULE_NAME"
-    
-    # Installa Docker CLI all'interno del container AWS CLI
-    echo "Installazione delle dipendenze necessarie..."
-    yum install -y docker
-    
-    # Scarica l'ultimo artefatto da S3
-    echo "Download dell'artefatto da S3..."
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      S3_SOURCE="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-    else
-      S3_SOURCE="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
-    fi
-    
-    mkdir -p /tmp/artifacts
-    aws s3 cp --recursive ${S3_SOURCE} /tmp/artifacts/
-    
-    echo "Verifica degli artefatti scaricati:"
-    ls -la /tmp/artifacts/
-    
-    # Esegui azioni di deployment utilizzando Docker
-    echo "Avvio del processo di deployment su SIT..."
-    
-    # Esempio: caricamento dell'immagine Docker dall'ECR
-    aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
-    
-    # Esempio: esecuzione di comandi Docker per il deployment
-    # Questa parte va personalizzata in base alle tue specifiche esigenze di deployment
-    docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULE_NAME}:${VERSION}
-    
-    # Esempio: aggiorna un servizio esistente (ECS, K8s, ecc.)
-    # Ad esempio, per ECS:
-    aws ecs update-service --cluster auxdromos-sit --service auxdromos-${MODULE_NAME}-service --force-new-deployment
-    
-    echo "Deployment completato con successo in ambiente SIT"
+    - artifact_upload_s3
+  script:
+    - echo "Esecuzione del deploy in ambiente SIT..."
+    - if [ -f module_name.env ]; then . module_name.env; fi
+    - echo "Modulo da deployare $MODULE_NAME"
+
+    - echo "Installazione delle dipendenze necessarie..."
+    - amazon-linux-extras install -y docker
+    - yum install -y awscli jq python3
+
+    # Download degli artefatti da S3
+    - echo "Download degli artefatti da S3..."
+    - if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/";
+      else
+      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/";
+      fi
+    - mkdir -p deployment
+    - aws s3 cp $S3_PATH deployment/ --recursive
+
+    # Operazioni di deployment
+    - echo "Configurazione dell'ambiente SIT..."
+    - cd deployment
+
+    # Estrai i file di configurazione se necessario
+    - if [ -f "$MODULE_NAME-$VERSION.zip" ]; then
+      unzip -o "$MODULE_NAME-$VERSION.zip" -d ./extracted;
+      cd ./extracted;
+      fi
+
+    # Esegui lo script di deployment se esiste (correzione dell'indentazione)
+    - |
+      if [ -f "scripts/deploy.sh" ]; then
+        chmod +x scripts/deploy.sh
+        ./scripts/deploy.sh -e sit
+      elif [ -f "deploy.sh" ]; then
+        chmod +x deploy.sh
+        ./deploy.sh -e sit
+      else
+        echo "ATTENZIONE: Nessuno script di deploy trovato, procedura manuale richiesta"
+      fi
+
+    - echo "Deploy in ambiente SIT completato con successo"
+  environment:
+    name: SIT
+    url: https://sit.example.com  # Sostituisci con l'URL del tuo ambiente SIT
   only:
     - main
     - develop
+  when: manual
