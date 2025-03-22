@@ -257,7 +257,10 @@ deploy_sit:
     - echo "Modulo da deployare $MODULE_NAME versione $VERSION"
 
     # Installazione delle dipendenze necessarie
-    - apt-get update -y && apt-get install -y unzip docker.io docker-compose curl jq
+    - apt-get update -y
+    - apt-get install -y unzip curl jq
+    # Docker potrebbe non essere necessario in questa fase o richiedere un'installazione diversa
+    # - apt-get install -y docker.io docker-compose
 
     # 1. Download dell'artefatto distro più recente
     - echo "Download dell'artefatto distro da S3..."
@@ -269,7 +272,7 @@ deploy_sit:
     # 2. Estrazione dell'artefatto distro
     - echo "Estrazione dell'artefatto distro..."
     - cd distro
-    - unzip -o distro-$DISTRO_VERSION.zip
+    - unzip -o distro-$DISTRO_VERSION.zip || { echo "Errore durante l'estrazione. Installazione unzip..."; cd ..; apt-get install -y unzip; cd distro; unzip -o distro-$DISTRO_VERSION.zip; }
     - echo "Struttura dei file estratti:"
     - find . -type f | sort | head -20
     - cd ..
