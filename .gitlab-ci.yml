@@ -6,7 +6,7 @@ stages:
   - build
   - test
   - package
-  - upload
+  - upload_to_s3
 
 extract_module_info:
   stage: prepare
