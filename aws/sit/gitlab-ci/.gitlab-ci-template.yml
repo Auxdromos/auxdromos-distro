@@ -218,9 +218,13 @@ build_docker:
 
 deploy_sit:
   stage: deploy_sit
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
+  image: amazon/aws-cli:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+
   dependencies:
     - extract_module_name
   only:
@@ -246,5 +250,3 @@ deploy_sit:
     cd aws/sit && bash scripts/deploy_module.sh $MODULE_NAME $VERSION
   environment:
     name: sit
-    url: https://sit.auxdromos.example.com
-  when: manual
