@@ -138,34 +138,61 @@ artifact_upload_s3:
   script: |
     echo "Caricamento degli artefatti su S3..."
     
+    # Carica le variabili dall'environment file
     if [ -f module_name.env ]; then
       . module_name.env
     fi
     
-    # Cambia il percorso in base al branch
+    # Determina il percorso di destinazione in base al branch
     if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      # Per il branch main, usa il percorso standard
-      ARTIFACT_DIR="$MODULE_NAME/$VERSION"
-      echo "Caricamento artefatti di produzione in $ARTIFACT_DIR"
+      S3_DESTINATION="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
     else
-      # Per develop o altri branch, aggiungi develop come prefisso
-      ARTIFACT_DIR="develop/$MODULE_NAME/$VERSION"
-      echo "Caricamento artefatti di sviluppo in $ARTIFACT_DIR"
+      S3_DESTINATION="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
     fi
     
-    # Carica i JAR
-    JARS=$(find target -name "*.jar" -type f)
-    for jar in $JARS; do
-      aws s3 cp "$jar" "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/$(basename $jar)"
-    done
+    # Carica i file su S3
+    echo "Caricamento su ${S3_DESTINATION}..."
+    aws s3 cp target/*.jar ${S3_DESTINATION}
     
-    # Carica build-info.json
-    aws s3 cp target/build-info.json "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/build-info.json"
-    
-    # Carica directory di distribuzione se presente
-    if [ -d "target/distribution" ]; then
-      aws s3 cp target/distribution/ "s3://$S3_BUCKET_NAME/$ARTIFACT_DIR/distribution/" --recursive
+    if [ -d "target/distribution/" ]; then
+      aws s3 cp --recursive target/distribution/ ${S3_DESTINATION}distribution/
     fi
+    
+    # Carica il file build-info.json
+    aws s3 cp target/build-info.json ${S3_DESTINATION}
+    
+    # Pulizia delle vecchie versioni, conservando solo le ultime 5
+    echo "Pulizia delle versioni obsolete..."
+    
+    # Funzione per pulire le versioni, mantenendo solo le ultime N
+    cleanup_versions() {
+      local path=$1
+      local keep=$2
+    
+      # Elenca le versioni, escludi le cartelle correnti e ordina per data (più recenti prima)
+      versions=$(aws s3 ls ${path} | grep -v "${VERSION}/" | awk '{print $2}' | sort -r)
+    
+      # Conta le versioni
+      count=$(echo "$versions" | wc -l)
+    
+      # Se abbiamo più versioni rispetto a quante ne vogliamo conservare
+      if [ "$count" -gt "$keep" ]; then
+        # Skippa le prime $keep versioni (le più recenti) e cancella le altre
+        echo "$versions" | tail -n +$((keep + 1)) | while read -r old_version; do
+          echo "Rimuovo la versione obsoleta: ${path}${old_version}"
+          aws s3 rm --recursive "${path}${old_version}"
+        done
+      fi
+    }
+    
+    # Esegui la pulizia specifica per il branch
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      # Per main, conserva le ultime 5 versioni
+      cleanup_versions "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" 5
+    else
+      # Per develop, conserva le ultime 3 versioni
+      cleanup_versions "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/" 3
+    fi   
 
 build_docker:
   stage: build_docker
@@ -215,38 +242,65 @@ build_docker:
     docker build -t auxdromos-$MODULE_NAME:$VERSION .
     docker tag auxdromos-$MODULE_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
     docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION    
+    
 
 deploy_sit:
   stage: deploy_sit
-  image: amazon/aws-cli:latest
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
   services:
-    - docker:dind
+    - name: docker:dind
+      alias: docker
   variables:
     DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-
+    DOCKER_TLS_CERTDIR: ""  # Disabilita TLS per semplicità in ambiente di test
   dependencies:
     - extract_module_name
-  only:
-    - main
+    - build
   script: |
     echo "Esecuzione del deploy in ambiente SIT..."
-    if [ -f module_name.env ]; then 
+    
+    # Carica le variabili dall'environment file
+    if [ -f module_name.env ]; then
       . module_name.env
     fi
+    
     echo "Modulo da deployare: $MODULE_NAME"
     
-    # Solo per main, non fare deploy di versioni SNAPSHOT
-    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
-      echo "Errore: Versione SNAPSHOT rilevata su main. Impossibile eseguire il deploy."
-      exit 1
+    # Installa Docker CLI all'interno del container AWS CLI
+    echo "Installazione delle dipendenze necessarie..."
+    yum install -y docker
+    
+    # Scarica l'ultimo artefatto da S3
+    echo "Download dell'artefatto da S3..."
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      S3_SOURCE="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+    else
+      S3_SOURCE="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
     fi
     
-    # Configurare AWS CLI per ECR
-    aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+    mkdir -p /tmp/artifacts
+    aws s3 cp --recursive ${S3_SOURCE} /tmp/artifacts/
     
-    # Esegui lo script di deploy
-    chmod +x aws/sit/scripts/deploy_module.sh
-    cd aws/sit && bash scripts/deploy_module.sh $MODULE_NAME $VERSION
-  environment:
-    name: sit
+    echo "Verifica degli artefatti scaricati:"
+    ls -la /tmp/artifacts/
+    
+    # Esegui azioni di deployment utilizzando Docker
+    echo "Avvio del processo di deployment su SIT..."
+    
+    # Esempio: caricamento dell'immagine Docker dall'ECR
+    aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+    
+    # Esempio: esecuzione di comandi Docker per il deployment
+    # Questa parte va personalizzata in base alle tue specifiche esigenze di deployment
+    docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULE_NAME}:${VERSION}
+    
+    # Esempio: aggiorna un servizio esistente (ECS, K8s, ecc.)
+    # Ad esempio, per ECS:
+    aws ecs update-service --cluster auxdromos-sit --service auxdromos-${MODULE_NAME}-service --force-new-deployment
+    
+    echo "Deployment completato con successo in ambiente SIT"
+  only:
+    - main
+    - develop

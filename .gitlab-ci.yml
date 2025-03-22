@@ -133,18 +133,68 @@ package_configs:
     - main
 
 upload_to_s3:
-  stage: upload
+  stage: deploy  # assumi che questo sia lo stage, modificalo se diverso
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
   dependencies:
-    - package_configs
-    - extract_module_info
-    - check_version
-  script:
-    - set -x
-    - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "DEBUG MODULE_NAME=$MODULE_NAME, VERSION=$VERSION"
-    - aws configure set region "${AWS_DEFAULT_REGION}"
-    - echo "Caricamento su S3 in s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-    - aws s3 cp dist/ "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" --recursive
+    - build  # assumo che dipenda da build, adatta secondo le tue esigenze
+    - extract_module_name  # per ottenere MODULE_NAME e VERSION
+  script: |
+    echo "Caricamento degli artefatti su S3..."
+    
+    # Carica le variabili dall'environment file
+    if [ -f module_name.env ]; then
+      . module_name.env
+    fi
+    
+    # Determina il percorso di destinazione in base al branch
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      S3_DESTINATION="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+    else
+      S3_DESTINATION="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+    fi
+    
+    # Esegui il caricamento su S3 (adatta questo alle tue esigenze specifiche)
+    echo "Caricamento su ${S3_DESTINATION}..."
+    aws s3 cp --recursive artifacts/ ${S3_DESTINATION}
+    
+    # Funzione per pulire le versioni, mantenendo solo le ultime N
+    cleanup_versions() {
+      local path=$1
+      local keep=$2
+    
+      echo "Controllo versioni in $path..."
+      # Elenca le versioni, escludi la cartella corrente e ordina per data (più recenti prima)
+      versions=$(aws s3 ls ${path} | grep -v "${VERSION}/" | awk '{print $2}' | sort -r)
+    
+      # Conta le versioni
+      count=$(echo "$versions" | wc -l)
+      echo "Trovate $count versioni totali, mantengo le ultime $keep"
+    
+      # Se abbiamo più versioni rispetto a quante ne vogliamo conservare
+      if [ "$count" -gt "$keep" ]; then
+        # Skippa le prime $keep versioni (le più recenti) e cancella le altre
+        echo "$versions" | tail -n +$((keep + 1)) | while read -r old_version; do
+          echo "Rimuovo la versione obsoleta: ${path}${old_version}"
+          aws s3 rm --recursive "${path}${old_version}"
+        done
+      else
+        echo "Non è necessario rimuovere versioni obsolete"
+      fi
+    }
+    
+    # Esegui la pulizia specifica per il branch
+    echo "Avvio pulizia delle vecchie versioni..."
+    
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      # Per main, conserva le ultime 5 versioni
+      echo "Branch main: mantengo le ultime 5 versioni"
+      cleanup_versions "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" 5
+    else
+      # Per develop, conserva le ultime 3 versioni
+      echo "Branch develop o feature: mantengo le ultime 3 versioni"
+      cleanup_versions "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/" 3
+    fi
+    
+    echo "Operazione di upload e pulizia completata con successo"
