@@ -133,7 +133,7 @@ package_configs:
     - main
 
 upload_to_s3:
-  stage: deploy  # assumi che questo sia lo stage, modificalo se diverso
+  stage: upload_to_s3  # assumi che questo sia lo stage, modificalo se diverso
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
