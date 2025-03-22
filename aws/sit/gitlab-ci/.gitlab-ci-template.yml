@@ -281,21 +281,19 @@ deploy_sit:
 
     # Esegui lo script di deployment se esiste (correzione dell'indentazione)
     - |
-      if [ -f "scripts/deploy.sh" ]; then
-        chmod +x scripts/deploy.sh
-        ./scripts/deploy.sh -e sit
-      elif [ -f "deploy.sh" ]; then
-        chmod +x deploy.sh
-        ./deploy.sh -e sit
+      if [ -f "aws/sit/script/deploy_module.sh" ]; then
+        chmod +x aws/sit/script/deploy_module.sh
+        ./aws/sit/script/deploy.sh -e sit
+      elif [ -f "aws/sit/script/deploy_module.sh" ]; then
+        chmod +x aws/sit/script/deploy_module.sh
+        ./aws/sit/script/deploy_module.sh -e sit
       else
         echo "ATTENZIONE: Nessuno script di deploy trovato, procedura manuale richiesta"
       fi
 
+
     - echo "Deploy in ambiente SIT completato con successo"
   environment:
     name: SIT
-    url: https://sit.example.com  # Sostituisci con l'URL del tuo ambiente SIT
   only:
     - main
-    - develop
-  when: manual
