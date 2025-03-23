@@ -246,76 +246,32 @@ build_docker:
 
 deploy_sit:
   stage: deploy_sit
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
-  dependencies:
-    - build_docker  # Manteniamo questa dipendenza se esiste
-    - artifact_upload_s3
-script: |
-  set -e
-  set -o pipefail
-  
-  # Installiamo ssh per connetterci all'istanza EC2
-  yum install -y openssh-clients || microdnf install -y openssh-clients || apt-get install -y openssh-client
-  
-  # Debug: stampa il valore dell'host per verificare
-  echo "DEBUG: EC2_HOST = $EC2_HOST"
-  echo "DEBUG: EC2_USER = $EC2_USER"
-  
-  # Verifichiamo che la variabile EC2_HOST sia definita e non vuota
-  if [ -z "$EC2_HOST" ]; then
-    echo "ERRORE: Variabile EC2_HOST non definita o vuota"
-    exit 1
-  fi
-  
-  # Creiamo una directory temporanea per la chiave SSH
-  mkdir -p ~/.ssh
-  chmod 700 ~/.ssh
-  
-  # Setto la chiave SSH
-  echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-  chmod 600 ~/.ssh/id_rsa
-  
-  # Aggiungiamo l'host alla lista dei known_hosts in modo sicuro
-  # Versione semplificata che dovrebbe funzionare senza problemi
-  echo "Aggiungo $EC2_HOST ai known hosts..."
-  ssh-keyscan "$EC2_HOST" >> ~/.ssh/known_hosts
-  
-  # Verifica che l'aggiunta sia avvenuta con successo
-  if grep -q "$EC2_HOST" ~/.ssh/known_hosts; then
-    echo "Host aggiunto con successo ai known_hosts"
-  else
-    echo "AVVISO: L'host potrebbe non essere stato aggiunto correttamente"
-  fi
-  
-  # Verifichiamo se il modulo è "auxdromos-distro" che ha una gestione speciale
-  if [ "$MODULE_NAME" == "auxdromos-distro" ]; then
-    echo "Rilevato modulo di distribuzione, i file sono già sull'istanza"
-  
-    # Eseguiamo lo script di deploy usando i file già presenti
-    ssh "${EC2_USER}@${EC2_HOST}" "cd /opt/auxdromos/$MODULE_NAME/latest && unzip -o $MODULE_NAME-*.zip -d temp && cd temp && ./scripts/deploy_sit.sh $VERSION"
-  else
-    echo "Deploy standard per modulo $MODULE_NAME versione $VERSION..."
-  
-    # Per altri moduli, potremmo dover scaricare da S3 o eseguire altre operazioni
-  
-    # Esempio di download da S3 se necessario
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-    else
-      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
-    fi
-  
-    # Creiamo una directory temporanea sull'istanza
-    ssh "${EC2_USER}@${EC2_HOST}" "mkdir -p /tmp/deploy-$MODULE_NAME"
-  
-    # Copiamo i file necessari da S3 all'istanza, se non sono già presenti
-    aws s3 cp "${S3_PATH}" "/tmp/" --recursive
-    scp /tmp/*.jar "${EC2_USER}@${EC2_HOST}:/tmp/deploy-$MODULE_NAME/"
-  
-    # Eseguiamo il deployment
-    ssh "${EC2_USER}@${EC2_HOST}" "cd /tmp/deploy-$MODULE_NAME && ./deploy.sh"
-  fi
-  
-  echo "Deploy completato con successo!"
+  image: alpine:latest  # O un'altra immagine minimal che abbia bisogno del client SSH
+  # Se hai un'immagine custom con ssh già installato, puoi usarla qui
+  script:
+    - set -ex
+    # 1) Controllo variabili
+    - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito in variabili GitLab!"; exit 1; fi
+    - if [ -z "$EC2_USER" ]; then echo "EC2_USER non definito in variabili GitLab!"; exit 1; fi
+    - if [ -z "$EC2_PRIVATE_KEY" ]; then echo "EC2_PRIVATE_KEY non definito in variabili GitLab!"; exit 1; fi
+
+    # 2) Installa il client SSH
+    - apk add --no-cache openssh-client
+
+    # 3) Prepariamo la chiave SSH
+    - mkdir -p ~/.ssh
+    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+
+    # 4) Aggiungiamo l'host ai known_hosts per evitare prompt
+    - echo "Aggiungo $EC2_HOST ai known hosts..."
+    - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+    # 5) Esempio di operazioni di deploy (scp / ssh)
+    - scp ./scripts/deploy_module.sh "$EC2_USER@$EC2_HOST:/opt/auxdromos/aws/sit/scripts/"
+    - ssh -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "bash /opt/auxdromos/aws/sit/scripts/deploy_module.sh"
+
+  only:
+    - main
+  environment:
+    name: sit

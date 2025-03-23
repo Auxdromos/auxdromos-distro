@@ -140,60 +140,64 @@ upload_to_s3:
   dependencies:
     - package_configs
     - extract_module_info
-  script: |
-    set -e
-    set -o pipefail
-    
-    if [ -f module_info.env ]; then
-      . module_info.env
-    fi
-    
-    echo "Caricamento artefatti per $MODULE_NAME versione $VERSION..."
-    
-    # Determino il percorso base su S3 in base al branch
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-    else
-      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
-    fi
-    
-    echo "Caricamento su $S3_PATH..."
-    
-    # Carichiamo i file di configurazione impacchettati
-    aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "${S3_PATH}" --acl bucket-owner-full-control
-    aws s3 cp "dist/manifest.json" "${S3_PATH}" --acl bucket-owner-full-control
-    
-    # Aggiungiamo un marcatore "latest" per facilitare l'accesso all'ultima versione
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
-      aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
-    else
-      aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
-      aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
-    fi
-    
-    # Copiamo anche sull'istanza EC2 di SIT
-    # Installiamo ssh per connetterci all'istanza EC2 (usando il package manager corretto)
-    yum install -y openssh-clients || microdnf install -y openssh-clients
-    
-    # Creiamo una directory temporanea per la chiave SSH
-    mkdir -p ~/.ssh
-    echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-    chmod 600 ~/.ssh/id_rsa
-    
-    # Aggiungiamo l'host alla lista dei known_hosts per evitare prompt
-    ssh-keyscan -H $SIT_EC2_HOST >> ~/.ssh/known_hosts
-    
-    # Creiamo la directory di destinazione se non esiste
-    ssh $SSH_USER@$SIT_EC2_HOST "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
-    
-    # Copiamo gli artefatti sull'istanza
-    scp "dist/$MODULE_NAME-$VERSION.zip" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
-    scp "dist/manifest.json" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
-    
-    # Aggiorniamo il link "latest" sull'istanza
-    ssh $SSH_USER@$SIT_EC2_HOST "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
-    
-    echo "Artefatti caricati con successo su S3 e istanza EC2 di SIT"
   only:
     - main
+  script:
+    - set -ex
+    # Carica module_info.env se presente
+    - if [ -f module_info.env ]; then . module_info.env; fi
+
+    # Controllo che le variabili SSH siano settate
+    - if [ -z "$SIT_EC2_HOST" ]; then echo "SIT_EC2_HOST non definito!"; exit 1; fi
+    - if [ -z "$SSH_USER" ]; then echo "SSH_USER non definito!"; exit 1; fi
+    - if [ -z "$SSH_PRIVATE_KEY" ]; then echo "SSH_PRIVATE_KEY non definito!"; exit 1; fi
+
+    # Log di debug
+    - echo "Caricamento artefatti per $MODULE_NAME versione $VERSION..."
+
+    # Determina il percorso base su S3
+    - |
+      if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+        S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+      else
+        S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+      fi
+      echo "Caricamento su $S3_PATH..."
+
+    # Carichiamo i file di configurazione impacchettati su S3
+    - aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "${S3_PATH}" --acl bucket-owner-full-control
+    - aws s3 cp "dist/manifest.json" "${S3_PATH}" --acl bucket-owner-full-control
+
+    # Aggiungiamo un marcatore "latest"
+    - |
+      if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+        aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
+        aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
+      else
+        aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
+        aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
+      fi
+
+    # Installiamo SSH client per connetterci a SIT (l'immagine Amazon CLI potrebbe usare yum, microdnf, o simile)
+    - yum install -y openssh-clients || microdnf install -y openssh-clients || echo "Attenzione impossibile installare openssh-clients"
+
+    # Prepariamo la chiave SSH
+    - mkdir -p ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+
+    # Aggiungiamo l'host alla lista dei known_hosts
+    - echo "Aggiungo host $SIT_EC2_HOST"
+    - ssh-keyscan -H "$SIT_EC2_HOST" >> ~/.ssh/known_hosts
+
+    # Creiamo la directory di destinazione su EC2, se non esiste
+    - ssh "$SSH_USER@$SIT_EC2_HOST" "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
+
+    # Copiamo gli artefatti
+    - scp "dist/$MODULE_NAME-$VERSION.zip" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+    - scp "dist/manifest.json" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+
+    # Aggiorniamo il link "latest" su EC2
+    - ssh "$SSH_USER@$SIT_EC2_HOST" "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
+
+    - echo "Artefatti caricati con successo su S3 e sull'istanza EC2 di SIT"
