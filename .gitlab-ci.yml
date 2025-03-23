@@ -7,6 +7,7 @@ stages:
   - test
   - package
   - upload_to_s3
+  - tag_latest
 
 extract_module_info:
   stage: prepare
@@ -29,6 +30,7 @@ extract_module_info:
   artifacts:
     reports:
       dotenv: module_info.env
+
 
 check_version:
   stage: check_version
@@ -140,64 +142,58 @@ upload_to_s3:
   dependencies:
     - package_configs
     - extract_module_info
+  script: |
+    set -e
+    set -o pipefail
+    
+    if [ -f module_info.env ]; then
+      source module_info.env
+    fi
+    
+    echo "Caricamento del pacchetto su S3 per $MODULE_NAME versione $VERSION"
+    
+    # Determina il percorso S3 in base al branch
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+    else
+      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+    fi
+    
+    # Carica i file
+    aws s3 cp dist/ $S3_PATH --recursive
+    
+    echo "Caricamento su S3 completato al percorso: $S3_PATH"
+
+tag_latest:
+  stage: tag_latest
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  dependencies:
+    - upload_to_s3
+    - extract_module_info
+  script: |
+    if [ -f module_info.env ]; then
+      source module_info.env
+    fi
+    
+    echo "Aggiornando tag 'latest' per $MODULE_NAME"
+    
+    # Determina i percorsi S3 in base al branch
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+    
+      # Copia il file ZIP della versione specifica come "latest"
+      aws s3 cp "${SOURCE_PATH}${MODULE_NAME}-${VERSION}.zip" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${MODULE_NAME}-latest.zip"
+    
+      echo "Tag latest aggiornato con successo per la versione stabile $VERSION"
+    else
+      SOURCE_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+    
+      # Per i branch di sviluppo, aggiorniamo un tag "develop-latest"
+      aws s3 cp "${SOURCE_PATH}${MODULE_NAME}-${VERSION}.zip" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${MODULE_NAME}-develop-latest.zip"
+    
+      echo "Tag develop-latest aggiornato con successo per la versione $VERSION"
+    fi
   only:
     - main
-  script:
-    - set -ex
-    # Carica module_info.env se presente
-    - if [ -f module_info.env ]; then . module_info.env; fi
-
-    # Controllo che le variabili SSH siano settate
-    - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito!"; exit 1; fi
-    - if [ -z "$EC2_USER" ]; then echo "EC2_USER non definito!"; exit 1; fi
-    - if [ -z "$EC2_PRIVATE_KEY" ]; then echo "EC2_PRIVATE_KEY non definito!"; exit 1; fi
-
-    # Log di debug
-    - echo "Caricamento artefatti per $MODULE_NAME versione $VERSION..."
-
-    # Determina il percorso base su S3
-    - |
-      if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-        S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-      else
-        S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
-      fi
-      echo "Caricamento su $S3_PATH..."
-
-    # Carichiamo i file di configurazione impacchettati su S3
-    - aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "${S3_PATH}" --acl bucket-owner-full-control
-    - aws s3 cp "dist/manifest.json" "${S3_PATH}" --acl bucket-owner-full-control
-
-    # Aggiungiamo un marcatore "latest"
-    - |
-      if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-        aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
-        aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
-      else
-        aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
-        aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
-      fi
-
-    # Installiamo SSH client per connetterci a SIT (l'immagine Amazon CLI potrebbe usare yum, microdnf, o simile)
-    - yum install -y openssh-clients || microdnf install -y openssh-clients || echo "Attenzione impossibile installare openssh-clients"
-
-    # Prepariamo la chiave SSH
-    - mkdir -p ~/.ssh
-    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
-    - chmod 600 ~/.ssh/id_rsa
-
-    # Aggiungiamo l'host alla lista dei known_hosts
-    - echo "Aggiungo host $EC2_HOST"
-    - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-
-    # Creiamo la directory di destinazione su EC2, se non esiste
-    - ssh "$EC2_USER@$EC2_HOST" "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
-
-    # Copiamo gli artefatti
-    - scp "dist/$MODULE_NAME-$VERSION.zip" "$EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
-    - scp "dist/manifest.json" "$EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
-
-    # Aggiorniamo il link "latest" su EC2
-    - ssh "$EC2_USER@$EC2_HOST" "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
-
-    - echo "Artefatti caricati con successo su S3 e sull'istanza EC2 di SIT"

@@ -34,6 +34,7 @@ extract_module_name:
     reports:
       dotenv: module_name.env
 
+
 check_version:
   stage: check_version
   dependencies:
@@ -243,35 +244,54 @@ build_docker:
     docker tag auxdromos-$MODULE_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
     docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION    
     
-
 deploy_sit:
   stage: deploy_sit
-  image: alpine:latest  # O un'altra immagine minimal che abbia bisogno del client SSH
-  # Se hai un'immagine custom con ssh già installato, puoi usarla qui
-  script:
-    - set -ex
-    # 1) Controllo variabili
-    - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito in variabili GitLab!"; exit 1; fi
-    - if [ -z "$EC2_USER" ]; then echo "EC2_USER non definito in variabili GitLab!"; exit 1; fi
-    - if [ -z "$EC2_PRIVATE_KEY" ]; then echo "EC2_PRIVATE_KEY non definito in variabili GitLab!"; exit 1; fi
-
-    # 2) Installa il client SSH
-    - apk add --no-cache openssh-client
-
-    # 3) Prepariamo la chiave SSH
-    - mkdir -p ~/.ssh
-    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
-    - chmod 600 ~/.ssh/id_rsa
-
-    # 4) Aggiungiamo l'host ai known_hosts per evitare prompt
-    - echo "Aggiungo $EC2_HOST ai known hosts..."
-    - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-
-    # 5) Esempio di operazioni di deploy (scp / ssh)
-    - scp ./scripts/deploy_module.sh "$EC2_USER@$EC2_HOST:/opt/auxdromos/aws/sit/scripts/"
-    - ssh -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "bash /opt/auxdromos/aws/sit/scripts/deploy_module.sh"
-
-  only:
-    - main
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  dependencies:
+    - extract_module_name
+  tags:
+    - ec2-deploy  # Questo tag indica di eseguire su un runner specifico sull'istanza EC2
+  script: |
+    set -e
+    set -o pipefail
+    
+    # Carichiamo i valori delle variabili dal file .env
+    if [ -f module_name.env ]; then
+      source module_name.env
+    fi
+    
+    echo "Inizio deploy del modulo $MODULE_NAME versione $VERSION su SIT..."
+    
+    # Crea directory di lavoro
+    DEPLOY_DIR="/tmp/deploy-$MODULE_NAME-$VERSION"
+    mkdir -p $DEPLOY_DIR
+    cd $DEPLOY_DIR
+    
+    # Scarica la distro più recente da S3
+    echo "Scarico l'ultima versione della distribuzione da S3..."
+    aws s3 cp "s3://${S3_BUCKET_NAME}/auxdromos-distro/" ./ --recursive --include "*latest.zip" || {
+      echo "Errore durante il download della distribuzione"
+      exit 1
+    }
+    
+    # Estrai il file zip della distribuzione
+    DISTRO_ZIP=$(ls auxdromos-distro-*.zip | sort -V | tail -n 1)
+    echo "Estrazione del file $DISTRO_ZIP..."
+    unzip -o $DISTRO_ZIP
+    
+    # Imposta le variabili di ambiente per il deploy
+    export AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID}
+    export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+    
+    # Esegui lo script di deploy per questo modulo
+    echo "Esecuzione dello script deploy_module.sh per il modulo $MODULE_NAME..."
+    bash ./scripts/deploy_module.sh $MODULE_NAME
+    
+    echo "Deploy completato con successo!"
   environment:
     name: sit
+  only:
+    - main
+

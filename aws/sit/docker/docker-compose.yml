@@ -1,3 +1,4 @@
+# docker-compose.yml modificato
 version: '3.8'
 
 services:
@@ -7,9 +8,21 @@ services:
     env_file:
       - ./env/${MODULO}.env
     ports:
-    - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
     networks:
       - auxdromos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${INTERNAL_PORT}/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   auxdromos-network:
