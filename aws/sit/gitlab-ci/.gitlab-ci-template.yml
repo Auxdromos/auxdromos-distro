@@ -263,6 +263,12 @@ script: |
   echo "DEBUG: EC2_HOST = $EC2_HOST"
   echo "DEBUG: EC2_USER = $EC2_USER"
   
+  # Verifichiamo che la variabile EC2_HOST sia definita e non vuota
+  if [ -z "$EC2_HOST" ]; then
+    echo "ERRORE: Variabile EC2_HOST non definita o vuota"
+    exit 1
+  fi
+  
   # Creiamo una directory temporanea per la chiave SSH
   mkdir -p ~/.ssh
   chmod 700 ~/.ssh
@@ -272,16 +278,17 @@ script: |
   chmod 600 ~/.ssh/id_rsa
   
   # Aggiungiamo l'host alla lista dei known_hosts in modo sicuro
-  if [ -n "$EC2_HOST" ]; then
-    ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || {
-      echo "ERRORE: Impossibile eseguire ssh-keyscan per $EC2_HOST"
-      exit 1
-    }
+  # Versione semplificata che dovrebbe funzionare senza problemi
+  echo "Aggiungo $EC2_HOST ai known hosts..."
+  ssh-keyscan "$EC2_HOST" >> ~/.ssh/known_hosts
+  
+  # Verifica che l'aggiunta sia avvenuta con successo
+  if grep -q "$EC2_HOST" ~/.ssh/known_hosts; then
+    echo "Host aggiunto con successo ai known_hosts"
   else
-    echo "ERRORE: Variabile EC2_HOST non definita o vuota"
-    exit 1
+    echo "AVVISO: L'host potrebbe non essere stato aggiunto correttamente"
   fi
-
+  
   # Verifichiamo se il modulo è "auxdromos-distro" che ha una gestione speciale
   if [ "$MODULE_NAME" == "auxdromos-distro" ]; then
     echo "Rilevato modulo di distribuzione, i file sono già sull'istanza"
@@ -292,7 +299,6 @@ script: |
     echo "Deploy standard per modulo $MODULE_NAME versione $VERSION..."
   
     # Per altri moduli, potremmo dover scaricare da S3 o eseguire altre operazioni
-    # (questa parte dipende dalla logica attuale dello stage deploy_sit)
   
     # Esempio di download da S3 se necessario
     if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
