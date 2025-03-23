@@ -252,58 +252,64 @@ deploy_sit:
   dependencies:
     - build_docker  # Manteniamo questa dipendenza se esiste
     - artifact_upload_s3
-  script: |
-    set -e
-    set -o pipefail
-    
-    if [ -f module_name.env ]; then
-      . module_name.env
-    fi
-    
-    # Installiamo ssh per connetterci all'istanza EC2
-    apt-get update && apt-get install -y openssh-client
-    
-    # Creiamo una directory temporanea per la chiave SSH
-    mkdir -p ~/.ssh
-    echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
-    chmod 600 ~/.ssh/id_rsa
-    
-    # Aggiungiamo l'host alla lista dei known_hosts per evitare prompt
-    ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
-    
-    # Verifichiamo se il modulo è "auxdromos-distro" che ha una gestione speciale
-    if [ "$MODULE_NAME" == "auxdromos-distro" ]; then
-      echo "Rilevato modulo di distribuzione, i file sono già sull'istanza"
-    
-      # Eseguiamo lo script di deploy usando i file già presenti
-      ssh EC2_USER@$EC2_HOST "cd /opt/auxdromos/$MODULE_NAME/latest && unzip -o $MODULE_NAME-*.zip -d temp && cd temp && ./scripts/deploy_sit.sh $VERSION"
-    else
-      echo "Deploy standard per modulo $MODULE_NAME versione $VERSION..."
-    
-      # Per altri moduli, potremmo dover scaricare da S3 o eseguire altre operazioni
-      # (questa parte dipende dalla logica attuale dello stage deploy_sit)
-    
-      # Esempio di download da S3 se necessario
-      if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-        S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-      else
-        S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
-      fi
-    
-      # Creiamo una directory temporanea sull'istanza
-      ssh EC2_USER@$EC2_HOST "mkdir -p /tmp/deploy-$MODULE_NAME"
-    
-      # Copiamo i file necessari da S3 all'istanza, se non sono già presenti
-      aws s3 cp "${S3_PATH}" "/tmp/" --recursive
-      scp /tmp/*.jar "EC2_USER@$EC2_HOST:/tmp/deploy-$MODULE_NAME/"
-    
-      # Eseguiamo il deployment
-      ssh EC2_USER@$EC2_HOST "cd /tmp/deploy-$MODULE_NAME && ./deploy.sh"
-    fi
-    
-    echo "Deploy completato con successo!"
-  environment:
-    name: SIT
-  only:
-    - main
+script: |
+  set -e
+  set -o pipefail
+  
+  # Installiamo ssh per connetterci all'istanza EC2
+  yum install -y openssh-clients || microdnf install -y openssh-clients || apt-get install -y openssh-client
+  
+  # Debug: stampa il valore dell'host per verificare
+  echo "DEBUG: EC2_HOST = $EC2_HOST"
+  echo "DEBUG: EC2_USER = $EC2_USER"
+  
+  # Creiamo una directory temporanea per la chiave SSH
+  mkdir -p ~/.ssh
+  chmod 700 ~/.ssh
+  
+  # Setto la chiave SSH
+  echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+  chmod 600 ~/.ssh/id_rsa
+  
+  # Aggiungiamo l'host alla lista dei known_hosts in modo sicuro
+  if [ -n "$EC2_HOST" ]; then
+    ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || {
+      echo "ERRORE: Impossibile eseguire ssh-keyscan per $EC2_HOST"
+      exit 1
+    }
+  else
+    echo "ERRORE: Variabile EC2_HOST non definita o vuota"
+    exit 1
+  fi
 
+  # Verifichiamo se il modulo è "auxdromos-distro" che ha una gestione speciale
+  if [ "$MODULE_NAME" == "auxdromos-distro" ]; then
+    echo "Rilevato modulo di distribuzione, i file sono già sull'istanza"
+  
+    # Eseguiamo lo script di deploy usando i file già presenti
+    ssh "${EC2_USER}@${EC2_HOST}" "cd /opt/auxdromos/$MODULE_NAME/latest && unzip -o $MODULE_NAME-*.zip -d temp && cd temp && ./scripts/deploy_sit.sh $VERSION"
+  else
+    echo "Deploy standard per modulo $MODULE_NAME versione $VERSION..."
+  
+    # Per altri moduli, potremmo dover scaricare da S3 o eseguire altre operazioni
+    # (questa parte dipende dalla logica attuale dello stage deploy_sit)
+  
+    # Esempio di download da S3 se necessario
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+    else
+      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+    fi
+  
+    # Creiamo una directory temporanea sull'istanza
+    ssh "${EC2_USER}@${EC2_HOST}" "mkdir -p /tmp/deploy-$MODULE_NAME"
+  
+    # Copiamo i file necessari da S3 all'istanza, se non sono già presenti
+    aws s3 cp "${S3_PATH}" "/tmp/" --recursive
+    scp /tmp/*.jar "${EC2_USER}@${EC2_HOST}:/tmp/deploy-$MODULE_NAME/"
+  
+    # Eseguiamo il deployment
+    ssh "${EC2_USER}@${EC2_HOST}" "cd /tmp/deploy-$MODULE_NAME && ./deploy.sh"
+  fi
+  
+  echo "Deploy completato con successo!"
