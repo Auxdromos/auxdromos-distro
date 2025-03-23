@@ -148,9 +148,9 @@ upload_to_s3:
     - if [ -f module_info.env ]; then . module_info.env; fi
 
     # Controllo che le variabili SSH siano settate
-    - if [ -z "$SIT_EC2_HOST" ]; then echo "SIT_EC2_HOST non definito!"; exit 1; fi
-    - if [ -z "$SSH_USER" ]; then echo "SSH_USER non definito!"; exit 1; fi
-    - if [ -z "$SSH_PRIVATE_KEY" ]; then echo "SSH_PRIVATE_KEY non definito!"; exit 1; fi
+    - if [ -z "$EC2_HOST" ]; then echo "EC2_HOST non definito!"; exit 1; fi
+    - if [ -z "$EC2_USER" ]; then echo "EC2_USER non definito!"; exit 1; fi
+    - if [ -z "$EC2_PRIVATE_KEY" ]; then echo "EC2_PRIVATE_KEY non definito!"; exit 1; fi
 
     # Log di debug
     - echo "Caricamento artefatti per $MODULE_NAME versione $VERSION..."
@@ -183,21 +183,21 @@ upload_to_s3:
 
     # Prepariamo la chiave SSH
     - mkdir -p ~/.ssh
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
     - chmod 600 ~/.ssh/id_rsa
 
     # Aggiungiamo l'host alla lista dei known_hosts
-    - echo "Aggiungo host $SIT_EC2_HOST"
-    - ssh-keyscan -H "$SIT_EC2_HOST" >> ~/.ssh/known_hosts
+    - echo "Aggiungo host $EC2_HOST"
+    - ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
     # Creiamo la directory di destinazione su EC2, se non esiste
-    - ssh "$SSH_USER@$SIT_EC2_HOST" "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
+    - ssh "$EC2_USER@$EC2_HOST" "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
 
     # Copiamo gli artefatti
-    - scp "dist/$MODULE_NAME-$VERSION.zip" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
-    - scp "dist/manifest.json" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+    - scp "dist/$MODULE_NAME-$VERSION.zip" "$EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+    - scp "dist/manifest.json" "$EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
 
     # Aggiorniamo il link "latest" su EC2
-    - ssh "$SSH_USER@$SIT_EC2_HOST" "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
+    - ssh "$EC2_USER@$EC2_HOST" "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
 
     - echo "Artefatti caricati con successo su S3 e sull'istanza EC2 di SIT"
