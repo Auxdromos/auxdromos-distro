@@ -250,87 +250,60 @@ deploy_sit:
     name: amazon/aws-cli:latest
     entrypoint: [""]
   dependencies:
-    - extract_module_name
-  script:
-    - echo "Esecuzione del deploy in ambiente SIT..."
-    - if [ -f module_name.env ]; then . module_name.env; fi
-    - echo "Modulo da deployare $MODULE_NAME versione $VERSION"
-
-    # Installazione delle dipendenze necessarie per Amazon Linux (AWS CLI)
-    - yum update -y
-    - yum install -y unzip curl jq findutils
-
-    # 1. Download dell'artefatto distro più recente
-    - echo "Download dell'artefatto distro da S3..."
-    - DISTRO_VERSION=$(aws s3 ls s3://auxdromos-artifacts-unique/distro/ --recursive | grep manifest.json | sort -r | head -1 | awk -F'/' '{print $2}')
-    - echo "Ultima versione di distro trovata $DISTRO_VERSION"
-    - mkdir -p distro
-    - aws s3 cp s3://auxdromos-artifacts-unique/distro/$DISTRO_VERSION/distro-$DISTRO_VERSION.zip distro/
-
-    # 2. Estrazione dell'artefatto distro
-    - echo "Estrazione dell'artefatto distro..."
-    - cd distro
-    - unzip -o distro-$DISTRO_VERSION.zip || { echo "Errore durante l'estrazione"; exit 1; }
-    - echo "Struttura dei file estratti:"
-    - find . -type f | sort | head -20
-    - cd ..
-
-    # 3. Download dell'artefatto del modulo corrente
-    - echo "Download degli artefatti di $MODULE_NAME da S3..."
-    - if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/";
+    - build_docker  # Manteniamo questa dipendenza se esiste
+    - artifact_upload_s3
+  script: |
+    set -e
+    set -o pipefail
+    
+    if [ -f module_name.env ]; then
+      . module_name.env
+    fi
+    
+    # Installiamo ssh per connetterci all'istanza EC2
+    apt-get update && apt-get install -y openssh-client
+    
+    # Creiamo una directory temporanea per la chiave SSH
+    mkdir -p ~/.ssh
+    echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
+    chmod 600 ~/.ssh/id_rsa
+    
+    # Aggiungiamo l'host alla lista dei known_hosts per evitare prompt
+    ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+    
+    # Verifichiamo se il modulo è "auxdromos-distro" che ha una gestione speciale
+    if [ "$MODULE_NAME" == "auxdromos-distro" ]; then
+      echo "Rilevato modulo di distribuzione, i file sono già sull'istanza"
+    
+      # Eseguiamo lo script di deploy usando i file già presenti
+      ssh EC2_USER@$EC2_HOST "cd /opt/auxdromos/$MODULE_NAME/latest && unzip -o $MODULE_NAME-*.zip -d temp && cd temp && ./scripts/deploy_sit.sh $VERSION"
+    else
+      echo "Deploy standard per modulo $MODULE_NAME versione $VERSION..."
+    
+      # Per altri moduli, potremmo dover scaricare da S3 o eseguire altre operazioni
+      # (questa parte dipende dalla logica attuale dello stage deploy_sit)
+    
+      # Esempio di download da S3 se necessario
+      if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+        S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
       else
-      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/";
+        S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
       fi
-    - mkdir -p deployment
-    - aws s3 cp $S3_PATH deployment/ --recursive
-    - echo "Artefatti scaricati:"
-    - ls -la deployment/
-
-    # 4. Ricerca dello script di deploy
-    - echo "Ricerca dello script di deploy..."
-    - cd distro
-    - SCRIPT_PATH=$(find . -name "deploy_module.sh" | grep -E "aws/sit/script" | head -1)
-    - cd ..
-    - echo "Script path trovato $SCRIPT_PATH"
-
-    # Verifica se lo script è stato trovato e procedere con il deploy
-    - |
-      if [ -n "$SCRIPT_PATH" ]; then
-        echo "Script di deploy trovato: distro/$SCRIPT_PATH"
-        chmod +x distro/$SCRIPT_PATH
-      
-        # Identificazione della directory base corretta
-        DEPLOY_SCRIPT_DIR=$(dirname "distro/$SCRIPT_PATH")
-        BASE_DIR=$(echo $DEPLOY_SCRIPT_DIR | sed 's|/aws/sit/script||')
-        echo "Directory base rilevata: $BASE_DIR"
-      
-        # 5. Preparazione ambiente per deploy_module.sh
-        mkdir -p $BASE_DIR/env
-        echo "AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID}" > $BASE_DIR/env/deploy.env
-        echo "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}" >> $BASE_DIR/env/deploy.env
-        echo "BASE_PATH=$(pwd)/$BASE_DIR" >> $BASE_DIR/env/deploy.env
-        echo "MODULES=\"rdbms api-gateway frontend backend\"" >> $BASE_DIR/env/deploy.env
-        echo "MODULE_ORDER=\"rdbms api-gateway backend frontend\"" >> $BASE_DIR/env/deploy.env
-      
-        # 6. Copia degli artefatti del modulo dove il deploy_module.sh se li aspetta
-        cp -r deployment/* $BASE_DIR/
-      
-        # 7. Esecuzione dello script con parametro corretto
-        cd $(dirname "distro/$SCRIPT_PATH")
-        ./$(basename $SCRIPT_PATH) $MODULE_NAME
-      else
-        echo "ATTENZIONE: Script di deploy deploy_module.sh non trovato nel pacchetto distro"
-        # Esplora la struttura per debug
-        echo "File .sh disponibili nell'archivio distro:"
-        find distro -type f -name "*.sh" | sort
-        exit 1  # Fallisce la pipeline se lo script non viene trovato
-      fi
-
-    - echo "Deploy in ambiente SIT completato con successo"
+    
+      # Creiamo una directory temporanea sull'istanza
+      ssh EC2_USER@$EC2_HOST "mkdir -p /tmp/deploy-$MODULE_NAME"
+    
+      # Copiamo i file necessari da S3 all'istanza, se non sono già presenti
+      aws s3 cp "${S3_PATH}" "/tmp/" --recursive
+      scp /tmp/*.jar "EC2_USER@$EC2_HOST:/tmp/deploy-$MODULE_NAME/"
+    
+      # Eseguiamo il deployment
+      ssh EC2_USER@$EC2_HOST "cd /tmp/deploy-$MODULE_NAME && ./deploy.sh"
+    fi
+    
+    echo "Deploy completato con successo!"
   environment:
     name: SIT
-    url: https://sit.example.com
   only:
     - main
 

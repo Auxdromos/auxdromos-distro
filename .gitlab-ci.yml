@@ -133,71 +133,67 @@ package_configs:
     - main
 
 upload_to_s3:
-  stage: upload_to_s3  # Corretto da "uploa" a "upload_to_s3"
+  stage: upload_to_s3
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
   dependencies:
-    - extract_module_info  # Corretto da "extract_module_name" a "extract_module_info"
-    - package_configs      # Aggiunto per dipendere dal job che crea il pacchetto in 'dist/'
+    - package_configs
+    - extract_module_info
   script: |
-    echo "Caricamento degli artefatti su S3..."
+    set -e
+    set -o pipefail
     
-    # Carica le variabili dall'environment file
     if [ -f module_info.env ]; then
       . module_info.env
     fi
     
-    # Determina il percorso di destinazione in base al branch
+    echo "Caricamento artefatti per $MODULE_NAME versione $VERSION..."
+    
+    # Determino il percorso base su S3 in base al branch
     if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      S3_DESTINATION="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
     else
-      S3_DESTINATION="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
     fi
     
-    # Esegui il caricamento su S3
-    echo "Caricamento su ${S3_DESTINATION}..."
-    aws s3 cp --recursive dist/ ${S3_DESTINATION}
+    echo "Caricamento su $S3_PATH..."
     
-    # Funzione per pulire le versioni, mantenendo solo le ultime N
-    cleanup_versions() {
-      local path=$1
-      local keep=$2
+    # Carichiamo i file di configurazione impacchettati
+    aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "${S3_PATH}" --acl bucket-owner-full-control
+    aws s3 cp "dist/manifest.json" "${S3_PATH}" --acl bucket-owner-full-control
     
-      echo "Controllo versioni in $path..."
-      # Elenca le versioni, escludi la cartella corrente e ordina per data (più recenti prima)
-      versions=$(aws s3 ls ${path} | grep -v "${VERSION}/" | awk '{print $2}' | sort -r)
-    
-      # Conta le versioni
-      count=$(echo "$versions" | wc -l)
-      echo "Trovate $count versioni totali, mantengo le ultime $keep"
-    
-      # Se abbiamo più versioni rispetto a quante ne vogliamo conservare
-      if [ "$count" -gt "$keep" ]; then
-        # Skippa le prime $keep versioni (le più recenti) e cancella le altre
-        echo "$versions" | tail -n +$((keep + 1)) | while read -r old_version; do
-          echo "Rimuovo la versione obsoleta: ${path}${old_version}"
-          aws s3 rm --recursive "${path}${old_version}"
-        done
-      else
-        echo "Non è necessario rimuovere versioni obsolete"
-      fi
-    }
-    
-    # Esegui la pulizia specifica per il branch
-    echo "Avvio pulizia delle vecchie versioni..."
-    
+    # Aggiungiamo un marcatore "latest" per facilitare l'accesso all'ultima versione
     if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      # Per main, conserva le ultime 5 versioni
-      echo "Branch main: mantengo le ultime 5 versioni"
-      cleanup_versions "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" 5
+      aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
+      aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
     else
-      # Per develop, conserva le ultime 3 versioni
-      echo "Branch develop o feature: mantengo le ultime 3 versioni"
-      cleanup_versions "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/" 3
+      aws s3 cp "${S3_PATH}$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/$MODULE_NAME-latest.zip" --acl bucket-owner-full-control
+      aws s3 cp "${S3_PATH}manifest.json" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/latest/manifest.json" --acl bucket-owner-full-control
     fi
     
-    echo "Operazione di upload e pulizia completata con successo"
+    # Copiamo anche sull'istanza EC2 di SIT
+    # Installiamo ssh per connetterci all'istanza EC2
+    apk add --no-cache openssh-client
+    
+    # Creiamo una directory temporanea per la chiave SSH
+    mkdir -p ~/.ssh
+    echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
+    chmod 600 ~/.ssh/id_rsa
+    
+    # Aggiungiamo l'host alla lista dei known_hosts per evitare prompt
+    ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+    
+    # Creiamo la directory di destinazione se non esiste
+    ssh EC2_USER@$EC2_HOST "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
+    
+    # Copiamo gli artefatti sull'istanza
+    scp "dist/$MODULE_NAME-$VERSION.zip" "EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+    scp "dist/manifest.json" "EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+    
+    # Aggiorniamo il link "latest" sull'istanza
+    ssh EC2_USER@$EC2_HOST "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
+    
+    echo "Artefatti caricati con successo su S3 e istanza EC2 di SIT"
   only:
-    - develop
     - main
