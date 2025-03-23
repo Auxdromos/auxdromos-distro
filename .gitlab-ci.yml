@@ -173,26 +173,26 @@ upload_to_s3:
     fi
     
     # Copiamo anche sull'istanza EC2 di SIT
-    # Installiamo ssh per connetterci all'istanza EC2
-    apk add --no-cache openssh-client
+    # Installiamo ssh per connetterci all'istanza EC2 (usando il package manager corretto)
+    yum install -y openssh-clients || microdnf install -y openssh-clients
     
     # Creiamo una directory temporanea per la chiave SSH
     mkdir -p ~/.ssh
-    echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
+    echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
     chmod 600 ~/.ssh/id_rsa
     
     # Aggiungiamo l'host alla lista dei known_hosts per evitare prompt
-    ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+    ssh-keyscan -H $SIT_EC2_HOST >> ~/.ssh/known_hosts
     
     # Creiamo la directory di destinazione se non esiste
-    ssh EC2_USER@$EC2_HOST "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
+    ssh $SSH_USER@$SIT_EC2_HOST "mkdir -p /opt/auxdromos/$MODULE_NAME/$VERSION"
     
     # Copiamo gli artefatti sull'istanza
-    scp "dist/$MODULE_NAME-$VERSION.zip" "EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
-    scp "dist/manifest.json" "EC2_USER@$EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+    scp "dist/$MODULE_NAME-$VERSION.zip" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
+    scp "dist/manifest.json" "$SSH_USER@$SIT_EC2_HOST:/opt/auxdromos/$MODULE_NAME/$VERSION/"
     
     # Aggiorniamo il link "latest" sull'istanza
-    ssh EC2_USER@$EC2_HOST "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
+    ssh $SSH_USER@$SIT_EC2_HOST "rm -f /opt/auxdromos/$MODULE_NAME/latest && ln -sf /opt/auxdromos/$MODULE_NAME/$VERSION /opt/auxdromos/$MODULE_NAME/latest"
     
     echo "Artefatti caricati con successo su S3 e istanza EC2 di SIT"
   only:
