@@ -4,51 +4,41 @@ include:
 
 deploy_sit:
   stage: deploy_sit
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
+  image: alpine:latest
   dependencies:
     - extract_module_info
   timeout: 15m
+  before_script:
+    - apk add --no-cache openssh-client bash aws-cli
+    - mkdir -p ~/.ssh
+    - echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
   script:
-    - set -e  # Interrompe in caso di errore
+    - set -e
     - echo "Caricamento dell'ultima versione su istanza SIT..."
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
+      # Crea directory temporanea locale
+      mkdir -p /tmp/${MODULE_NAME}
+      
       # Scarica il pacchetto dal bucket S3
       aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
       
-      # Recupera l'ID dell'istanza da SSM Parameter Store
-      INSTANCE_ID=$(aws ssm get-parameter --name "/auxdromos/environment/sit/instance-id/${MODULE_NAME}" --query "Parameter.Value" --output text --with-decryption)
+      # Prepara la directory remota
+      ssh ${EC2_USER}@${EC2_HOST} "mkdir -p /app/${MODULE_NAME}/artifacts/"
       
-      if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-        echo "Errore: Impossibile trovare l'ID dell'istanza per ${MODULE_NAME} in SSM Parameter Store"
-        echo "Assicurati che il parametro /auxdromos/environment/sit/instance-id/${MODULE_NAME} esista"
-        exit 1
-      fi
+      # Trasferisci i file
+      scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
       
       # Crea un file marker con la versione attuale
       echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
+      scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
       
-      # Carica i file sull'istanza usando SSM
-      aws ssm send-command \
-        --instance-ids $INSTANCE_ID \
-        --document-name "AWS-RunShellScript" \
-        --parameters commands=["mkdir -p /app/${MODULE_NAME}/artifacts"] \
-        --region $AWS_DEFAULT_REGION
+      # Verifica se esiste uno script di deploy specifico sull'istanza e lo esegue
+      ssh ${EC2_USER}@${EC2_HOST} "if [ -f /app/${MODULE_NAME}/deploy.sh ]; then cd /app/${MODULE_NAME} && ./deploy.sh; else echo 'Nessuno script di deploy trovato'; fi"
       
-      # Carica i file su S3
-      aws s3 cp /tmp/${MODULE_NAME}/ "s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/${VERSION}/" --recursive
-      aws s3 cp /tmp/current-version.txt "s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/current-version.txt"
-      
-      # Sincronizza dall'S3 all'istanza
-      aws ssm send-command \
-        --instance-ids $INSTANCE_ID \
-        --document-name "AWS-RunShellScript" \
-        --parameters commands=["aws s3 sync s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/${VERSION}/ /app/${MODULE_NAME}/artifacts/"] \
-        --region $AWS_DEFAULT_REGION
-      
-      echo "Artefatto caricato con successo sull'istanza SIT: ${MODULE_NAME}-${VERSION}"
+      echo "Artefatto deployato con successo su istanza SIT: ${MODULE_NAME}-${VERSION}"
   after_script:
     - |
       if [ $CI_JOB_STATUS == "success" ]; then
@@ -58,5 +48,3 @@ deploy_sit:
       fi
   only:
     - main
-
-

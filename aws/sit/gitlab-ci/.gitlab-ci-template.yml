@@ -237,90 +237,64 @@ tag_latest:
 
 deploy_sit:
   stage: deploy_sit
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
+  image: alpine:latest
   dependencies:
     - extract_module_info
+  timeout: 15m
+  before_script:
+    - apk add --no-cache openssh-client bash aws-cli
+    - mkdir -p ~/.ssh
+    - echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
   script:
-    - echo "Utilizzo dell'artefatto già caricato sull'istanza SIT..."
+    - set -e
+    - echo "Verificando la versione esistente su istanza SIT..."
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
-      # Recupera l'ID dell'istanza da SSM Parameter Store
-      INSTANCE_ID=$(aws ssm get-parameter --name "/auxdromos/environment/sit/instance-id/${MODULE_NAME}" --query "Parameter.Value" --output text --with-decryption)
-      
-      if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-        echo "Errore: Impossibile trovare l'ID dell'istanza per ${MODULE_NAME} in SSM Parameter Store"
-        echo "Assicurati che il parametro /auxdromos/environment/sit/instance-id/${MODULE_NAME} esista"
-        exit 1
-      fi
-      
-      # Verifica se l'artefatto esiste già sull'istanza
-      CHECK_CMD_ID=$(aws ssm send-command \
-        --instance-ids $INSTANCE_ID \
-        --document-name "AWS-RunShellScript" \
-        --parameters commands=["test -d /app/${MODULE_NAME}/artifacts && echo 'exists' || echo 'not_exists'"] \
-        --region $AWS_DEFAULT_REGION \
-        --output text \
-        --query "Command.CommandId")
-      
-      # Attendi che il comando sia completato
-      sleep 5
-      
-      # Controlla il risultato
-      OUTPUT=$(aws ssm get-command-invocation --command-id $CHECK_CMD_ID --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION --query "StandardOutputContent" --output text)
-      
-      if [ "$OUTPUT" = "not_exists" ]; then
-        echo "Artefatto non trovato sull'istanza, eseguo il download dall'S3..."
-      
-        # Scarica l'ultima versione dal file marker
-        VERSION_CHECK=$(aws s3 cp "s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/current-version.txt" - || echo "")
-      
-        if [ -z "$VERSION_CHECK" ]; then
-          echo "Errore: Nessuna versione trovata nel bucket S3"
-          exit 1
-        fi
-      
-        ARTIFACT_VERSION=$(echo $VERSION_CHECK | cut -d'-' -f2)
-      
-        # Crea la directory di destinazione
-        aws ssm send-command \
-          --instance-ids $INSTANCE_ID \
-          --document-name "AWS-RunShellScript" \
-          --parameters commands=["mkdir -p /app/${MODULE_NAME}/artifacts"] \
-          --region $AWS_DEFAULT_REGION
-      
-        # Sincronizza i file dall'S3
-        aws ssm send-command \
-          --instance-ids $INSTANCE_ID \
-          --document-name "AWS-RunShellScript" \
-          --parameters commands=["aws s3 sync s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/${ARTIFACT_VERSION}/ /app/${MODULE_NAME}/artifacts/"] \
-          --region $AWS_DEFAULT_REGION
+      # Verifica se esiste già una versione installata
+      CURRENT_VERSION=""
+      if ssh ${EC2_USER}@${EC2_HOST} "[ -f /app/${MODULE_NAME}/current-version.txt ]"; then
+        CURRENT_VERSION=$(ssh ${EC2_USER}@${EC2_HOST} "cat /app/${MODULE_NAME}/current-version.txt")
+        echo "Versione correntemente installata: $CURRENT_VERSION"
       else
-        echo "Artefatto già presente sull'istanza, riutilizzo la versione esistente"
+        echo "Nessuna versione trovata, procedo con l'installazione"
       fi
       
-      # Esegui il deployment specifico del modulo
-      DEPLOY_CMD_ID=$(aws ssm send-command \
-        --instance-ids $INSTANCE_ID \
-        --document-name "AWS-RunShellScript" \
-        --parameters commands=["cd /app/${MODULE_NAME}/artifacts && ./deploy.sh || echo 'Deploy script failed'"] \
-        --region $AWS_DEFAULT_REGION \
-        --output text \
-        --query "Command.CommandId")
+      # Se la versione corrente è diversa dalla nuova o non esistente, procede con l'installazione
+      if [ "$CURRENT_VERSION" != "${MODULE_NAME}-${VERSION}" ]; then
+        echo "Installazione della nuova versione ${MODULE_NAME}-${VERSION}..."
       
-      # Attendi il completamento del deployment
-      sleep 10
+        # Crea directory temporanea locale
+        mkdir -p /tmp/${MODULE_NAME}
       
-      # Verifica l'esito del deployment
-      DEPLOY_STATUS=$(aws ssm get-command-invocation --command-id $DEPLOY_CMD_ID --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION --query "Status" --output text)
+        # Scarica il pacchetto dal bucket S3
+        aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
       
-      if [ "$DEPLOY_STATUS" != "Success" ]; then
-        echo "Errore durante il deployment sull'istanza"
-        aws ssm get-command-invocation --command-id $DEPLOY_CMD_ID --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION --query "StandardErrorContent" --output text
-        exit 1
+        # Prepara la directory remota
+        ssh ${EC2_USER}@${EC2_HOST} "mkdir -p /app/${MODULE_NAME}/artifacts/"
+      
+        # Trasferisci i file
+        scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+      
+        # Crea un file marker con la versione attuale
+        echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
+        scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
+      
+        # Verifica se esiste uno script di deploy specifico sull'istanza e lo esegue
+        ssh ${EC2_USER}@${EC2_HOST} "if [ -f /app/${MODULE_NAME}/deploy.sh ]; then cd /app/${MODULE_NAME} && ./deploy.sh; else echo 'Nessuno script di deploy trovato'; fi"
+      
+        echo "Artefatto deployato con successo su istanza SIT: ${MODULE_NAME}-${VERSION}"
+      else
+        echo "La versione ${MODULE_NAME}-${VERSION} è già installata. Nessuna azione richiesta."
       fi
-      
-      echo "Deploy completato con successo"
+  after_script:
+    - |
+      if [ $CI_JOB_STATUS == "success" ]; then
+        echo "Processo deployment completato con successo per ${MODULE_NAME}"
+      else
+        echo "Processo deployment fallito per ${MODULE_NAME}"
+      fi
   only:
     - main
+
