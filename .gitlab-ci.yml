@@ -11,9 +11,28 @@ deploy_sit:
   before_script:
     - apk add --no-cache openssh-client bash aws-cli
     - mkdir -p ~/.ssh
-    - echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
+
+    # Debug: verificare il formato della chiave (oscurando i dettagli sensibili)
+    - echo "Verifico la variabile della chiave privata..."
+    - echo "$EC2_PRIVATE_KEY" | wc -l
+    - echo "$EC2_PRIVATE_KEY" | head -n 1 | cut -c 1-10
+    - echo "$EC2_PRIVATE_KEY" | tail -n 1 | cut -c 1-10
+
+    # Assicuriamoci che la chiave sia formattata correttamente
+    - |
+      echo "$EC2_PRIVATE_KEY" > ~/.ssh/id_rsa
+      if ! grep -q "BEGIN" ~/.ssh/id_rsa; then
+        echo "ATTENZIONE: La chiave privata potrebbe non essere nel formato corretto"
+        echo "-----BEGIN RSA PRIVATE KEY-----" > ~/.ssh/fixed_key
+        cat ~/.ssh/id_rsa >> ~/.ssh/fixed_key
+        echo "-----END RSA PRIVATE KEY-----" >> ~/.ssh/fixed_key
+        mv ~/.ssh/fixed_key ~/.ssh/id_rsa
+      fi
     - chmod 600 ~/.ssh/id_rsa
     - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+
+    # Tenta un SSH con modalità verbose per il debug
+    - ssh -vvv ${EC2_USER}@${EC2_HOST} "echo Test connessione" || echo "Debug connessione SSH"
   script:
     - set -e
     - echo "Caricamento dell'ultima versione su istanza SIT..."
@@ -25,18 +44,33 @@ deploy_sit:
       # Scarica il pacchetto dal bucket S3
       aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
       
-      # Prepara la directory remota
-      ssh ${EC2_USER}@${EC2_HOST} "mkdir -p /app/${MODULE_NAME}/artifacts/"
+      # Prova a utilizzare un'autenticazione alternativa se disponibile
+      if [ -n "$EC2_PASSWORD" ]; then
+        echo "Usando autenticazione con password..."
+        apk add --no-cache sshpass
+        export SSHPASS="$EC2_PASSWORD"
       
-      # Trasferisci i file
-      scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+        # Prepara la directory remota
+        sshpass -e ssh ${EC2_USER}@${EC2_HOST} "mkdir -p /app/${MODULE_NAME}/artifacts/"
       
-      # Crea un file marker con la versione attuale
-      echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
-      scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
+        # Trasferisci i file
+        sshpass -e scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
       
-      # Verifica se esiste uno script di deploy specifico sull'istanza e lo esegue
-      ssh ${EC2_USER}@${EC2_HOST} "if [ -f /app/${MODULE_NAME}/deploy.sh ]; then cd /app/${MODULE_NAME} && ./deploy.sh; else echo 'Nessuno script di deploy trovato'; fi"
+        # Crea un file marker con la versione attuale
+        echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
+        sshpass -e scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
+      else
+        # Tenta comunque con la chiave SSH
+        # Prepara la directory remota
+        ssh ${EC2_USER}@${EC2_HOST} "mkdir -p /app/${MODULE_NAME}/artifacts/"
+      
+        # Trasferisci i file
+        scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+      
+        # Crea un file marker con la versione attuale
+        echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
+        scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
+      fi
       
       echo "Artefatto deployato con successo su istanza SIT: ${MODULE_NAME}-${VERSION}"
   after_script:
@@ -45,6 +79,8 @@ deploy_sit:
         echo "Deployment completato con successo per ${MODULE_NAME}-${VERSION}"
       else
         echo "Deployment fallito per ${MODULE_NAME}-${VERSION}"
+        echo "Verificare che la variabile EC2_PRIVATE_KEY contenga una chiave SSH valida nel formato corretto"
+        echo "Eventualmente riconfigurare la chiave in GitLab CI/CD > Settings > Variables"
       fi
   only:
     - main
