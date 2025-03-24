@@ -5,105 +5,90 @@ stages:
   - check_version
   - build
   - test
-  - artifact_upload_s3
-  - build_docker
+  - package
+  - upload_to_s3
+  - tag_latest
   - deploy_sit
 
-# Rimuovo l'inclusione duplicata del template di security
-
-extract_module_name:
+extract_module_info:
   stage: prepare
-  script: |
-    echo "Estrazione del MODULE_NAME dal pom.xml..."
-    export MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
-    if [ -z "$MODULE_NAME" ]; then 
-      echo "Errore: impossibile estrarre MODULE_NAME dal pom.xml"
-      exit 1
-    fi
-    echo "MODULE_NAME estratto: $MODULE_NAME"
-    echo "MODULE_NAME=$MODULE_NAME" >> module_name.env
-    
-    # Estrai anche la versione
-    export VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
-    echo "VERSION=$VERSION" >> module_name.env
-    echo "VERSION estratta: $VERSION"
-    
-    # Aggiungi informazioni sul branch
-    echo "CI_COMMIT_REF_NAME=$CI_COMMIT_REF_NAME" >> module_name.env
+  script:
+    - echo "Estrazione delle informazioni del modulo di distribuzione..."
+    - apk add --no-cache grep sed
+    - |
+      if [ -f "pom.xml" ]; then
+        export MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+        export VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+      else
+        # Se non c'è un pom.xml, assegna un nome di default e una versione basata sullo short SHA
+        export MODULE_NAME="auxdromos-distro"
+        export VERSION="1.0.0-${CI_COMMIT_SHORT_SHA}"
+      fi
+
+    - echo "MODULE_NAME=$MODULE_NAME" >> module_info.env
+    - echo "VERSION=$VERSION" >> module_info.env
+    - echo "Modulo $MODULE_NAME, Versione $VERSION"
   artifacts:
     reports:
-      dotenv: module_name.env
-
+      dotenv: module_info.env
 
 check_version:
   stage: check_version
   dependencies:
-    - extract_module_name
+    - extract_module_info
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
+  only:
+    - main
   script: |
     set -e
     set -o pipefail
 
     echo "Verifica della versione..."
 
-    # Carichiamo VERSION dal file .env creato prima
-    if [ -f module_name.env ]; then
-      . module_name.env
+    # Carichiamo VERSION dal file .env creato prima - CORRETTO IL NOME DEL FILE
+    if [ -f module_info.env ]; then
+      . module_info.env
     fi
-    
-    # Regole diverse per branch diversi
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      # Solo per main: vietiamo l'uso di SNAPSHOT
-      if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
-        echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
-        exit 1
-      fi
-    
-      # Solo per main: verifichiamo su ECR
-      if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
-        echo "Errore: La versione '$VERSION' è già presente su ECR."
-        exit 1
-      fi
-    
-      # Solo per main: verifichiamo su S3
-      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
-      echo "DEBUG FOUND = $FOUND"
-    
-      if [[ "$FOUND" -gt 0 ]]; then
+
+    # Vietiamo l'uso di SNAPSHOT in main
+    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
+      echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
+      exit 1
+    fi
+
+    # Verifichiamo se questa versione esiste già in ECR
+    if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
+      echo "Errore: La versione '$VERSION' è già presente su ECR."
+      exit 1
+    fi
+
+    # Corretto il controllo su S3 per uniformità con l'altro file
+    FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
+
+    echo "DEBUG FOUND = $FOUND" # Aggiunto per debug
+
+    if [[ "$FOUND" -gt 0 ]]; then
         echo "Versione già presente su S3. Interrompo la pipeline."
         exit 1
-      else
-        echo "Versione non presente su S3. Procedo..."
-      fi
     else
-      # Per develop: consentiamo SNAPSHOT ma controlliamo se esiste già nella cartella develop
-      if [[ "$VERSION" != *"SNAPSHOT"* ]]; then
-        echo "Avviso: Versione '$VERSION' in 'develop' non è una SNAPSHOT. Consigliato usare suffisso -SNAPSHOT."
-      fi
-    
-      # Verifica su S3 nel percorso develop
-      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
-      echo "DEBUG FOUND = $FOUND"
-    
-      if [[ "$FOUND" -gt 0 ]]; then
-        echo "Versione già presente su S3 nel percorso develop. Sovrascrivo..."
-      fi
+        echo "Versione non presente su S3. Procedo..."
     fi
+
 
 build:
   stage: build
+  image: maven:3.9.9-amazoncorretto-17  # Usa l'immagine Maven appropriata
   dependencies:
-    - extract_module_name
+    - extract_module_info
+    - check_version
   script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Build del modulo $MODULE_NAME..."
     - mvn clean package -Psit -DskipTests
     # Crea un file manifest che descrive questa build
     - |
-      if [ -f module_name.env ]; then
-        . module_name.env
-      fi
       cat > target/build-info.json <<EOF
       {
         "moduleName": "$MODULE_NAME",
@@ -121,136 +106,107 @@ build:
 
 test:
   stage: test
+  image: maven:3.9.9-amazoncorretto-17
   dependencies:
-    - extract_module_name
+    - extract_module_info
     - build
   script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Test del modulo $MODULE_NAME..."
     - mvn test
 
-artifact_upload_s3:
-  stage: artifact_upload_s3
+package_configs:
+  stage: package
+  script:
+    - set -x
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
+    - apk add --no-cache zip
+    - mkdir -p dist
+    - zip -r "dist/$MODULE_NAME-$VERSION.zip" aws/ docker/ scripts/ env/ *.yml *.yaml *.properties || echo "Nessun file da includere"
+    - echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"$CI_COMMIT_REF_NAME\",\"commitHash\":\"$CI_COMMIT_SHA\"}" > dist/manifest.json
+  dependencies:
+    - extract_module_info
+    - check_version
+  artifacts:
+    paths:
+      - dist/
+  only:
+    - develop
+    - main
+
+upload_to_s3:
+  stage: upload_to_s3
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
   dependencies:
-    - build
-    - extract_module_name
+    - package_configs
+    - extract_module_info
   script: |
-    echo "Caricamento degli artefatti su S3..."
+    set -e
+    set -o pipefail
     
-    # Carica le variabili dall'environment file
-    if [ -f module_name.env ]; then
-      . module_name.env
+    if [ -f module_info.env ]; then
+      source module_info.env
     fi
     
-    # Determina il percorso di destinazione in base al branch
+    echo "Caricamento del pacchetto su S3 per $MODULE_NAME versione $VERSION"
+    
+    # Determina il percorso S3 in base al branch
     if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      S3_DESTINATION="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
     else
-      S3_DESTINATION="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
     fi
     
-    # Carica i file su S3
-    echo "Caricamento su ${S3_DESTINATION}..."
-    aws s3 cp target/*.jar ${S3_DESTINATION}
+    # Carica i file
+    aws s3 cp dist/ $S3_PATH --recursive
     
-    if [ -d "target/distribution/" ]; then
-      aws s3 cp --recursive target/distribution/ ${S3_DESTINATION}distribution/
-    fi
-    
-    # Carica il file build-info.json
-    aws s3 cp target/build-info.json ${S3_DESTINATION}
-    
-    # Pulizia delle vecchie versioni, conservando solo le ultime 5
-    echo "Pulizia delle versioni obsolete..."
-    
-    # Funzione per pulire le versioni, mantenendo solo le ultime N
-    cleanup_versions() {
-      local path=$1
-      local keep=$2
-    
-      # Elenca le versioni, escludi le cartelle correnti e ordina per data (più recenti prima)
-      versions=$(aws s3 ls ${path} | grep -v "${VERSION}/" | awk '{print $2}' | sort -r)
-    
-      # Conta le versioni
-      count=$(echo "$versions" | wc -l)
-    
-      # Se abbiamo più versioni rispetto a quante ne vogliamo conservare
-      if [ "$count" -gt "$keep" ]; then
-        # Skippa le prime $keep versioni (le più recenti) e cancella le altre
-        echo "$versions" | tail -n +$((keep + 1)) | while read -r old_version; do
-          echo "Rimuovo la versione obsoleta: ${path}${old_version}"
-          aws s3 rm --recursive "${path}${old_version}"
-        done
-      fi
-    }
-    
-    # Esegui la pulizia specifica per il branch
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      # Per main, conserva le ultime 5 versioni
-      cleanup_versions "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" 5
-    else
-      # Per develop, conserva le ultime 3 versioni
-      cleanup_versions "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/" 3
-    fi   
+    echo "Caricamento su S3 completato al percorso: $S3_PATH"
 
-build_docker:
-  stage: build_docker
-  tags:
-    - ec2-shell
+
+tag_latest:
+  stage: tag_latest
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
   dependencies:
-    - extract_module_name
-    - artifact_upload_s3
+    - upload_to_s3
+    - extract_module_info
+  script: |
+    if [ -f module_info.env ]; then
+      source module_info.env
+    fi
+    
+    echo "Aggiornando tag 'latest' per $MODULE_NAME"
+    
+    # Determina i percorsi S3 in base al branch
+    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
+      SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+    
+      # Copia il file ZIP della versione specifica come "latest"
+      aws s3 cp "${SOURCE_PATH}${MODULE_NAME}-${VERSION}.zip" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${MODULE_NAME}-latest.zip"
+    
+      echo "Tag latest aggiornato con successo per la versione stabile $VERSION"
+    else
+      SOURCE_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
+    
+      # Per i branch di sviluppo, aggiorniamo un tag "develop-latest"
+      aws s3 cp "${SOURCE_PATH}${MODULE_NAME}-${VERSION}.zip" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${MODULE_NAME}-develop-latest.zip"
+    
+      echo "Tag develop-latest aggiornato con successo per la versione $VERSION"
+    fi
   only:
     - main
-  script: |
-    set -e  # Interrompe l'esecuzione in caso di errore
-    
-    if [ -f module_name.env ]; then
-      . module_name.env
-    fi
-    
-    # Solo per main, non creare docker per versioni SNAPSHOT
-    if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
-      echo "Attenzione: Versione SNAPSHOT rilevata su main. Non costruisco l'immagine Docker."
-      exit 1
-    fi
-    
-    echo "Costruzione dell'immagine Docker per $MODULE_NAME:$VERSION"
-    
-    # Verifica configurazione AWS
-    aws --version
-    aws sts get-caller-identity
-    docker --version
-    
-    # Configurazione AWS CLI per ECR
-    aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-    
-    # Crea repository ECR se non esiste
-    aws ecr describe-repositories --repository-names auxdromos-$MODULE_NAME || aws ecr create-repository --repository-name auxdromos-$MODULE_NAME
-    
-    # Recupera gli artefatti da S3
-    mkdir -p ./artifacts/
-    aws s3 cp "s3://$S3_BUCKET_NAME/$MODULE_NAME/$VERSION/" ./artifacts/ --recursive
-    
-    # Copia il Dockerfile nella directory di lavoro se non è presente
-    if [ ! -f Dockerfile ] && [ -f ./artifacts/Dockerfile ]; then
-      cp ./artifacts/Dockerfile ./
-    fi
-    
-    # Costruisci e pubblica l'immagine Docker
-    docker build -t auxdromos-$MODULE_NAME:$VERSION .
-    docker tag auxdromos-$MODULE_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
-    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION    
-    
+
 deploy_sit:
   stage: deploy_sit
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
   dependencies:
-    - extract_module_name
+    - extract_module_info
   tags:
     - ec2-deploy  # Questo tag indica di eseguire su un runner specifico sull'istanza EC2
   script: |
