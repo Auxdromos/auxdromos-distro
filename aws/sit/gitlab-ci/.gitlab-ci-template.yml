@@ -122,13 +122,14 @@ test:
 
 package_configs:
   stage: package
+  image: alpine:latest  # Usa Alpine Linux (molto leggera)
   script:
     - set -x
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
 
-    # Installa il pacchetto zip usando apt-get (per Debian/Ubuntu)
-    - apt-get update && apt-get install -y zip
+    # Installa zip in Alpine
+    - apk add --no-cache zip
 
     # Il resto del tuo script
     - mkdir -p dist
