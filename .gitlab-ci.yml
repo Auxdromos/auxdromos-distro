@@ -3,4 +3,47 @@ include:
     file: 'aws/sit/gitlab-ci/.gitlab-ci-template.yml'
 
 deploy_sit:
-  only: []  # Non verrà mai eseguito
+  stage: deploy_sit
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  dependencies:
+    - extract_module_info
+  script:
+    - echo "Caricamento dell'ultima versione su istanza SIT..."
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - |
+      # Scarica il pacchetto dal bucket S3
+      aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
+      
+      # Carica il pacchetto sull'istanza SIT
+      INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Environment,Values=SIT" "Name=tag:Name,Values=*${MODULE_NAME}*" --query "Reservations[].Instances[].InstanceId" --output text)
+      
+      if [ -z "$INSTANCE_ID" ]; then
+        echo "Errore: Nessuna istanza trovata per ${MODULE_NAME} in ambiente SIT"
+        exit 1
+      fi
+      
+      # Crea un file marker con la versione attuale
+      echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
+      
+      # Carica i file sull'istanza usando SSM
+      aws ssm send-command \
+        --instance-ids $INSTANCE_ID \
+        --document-name "AWS-RunShellScript" \
+        --parameters commands=["mkdir -p /app/${MODULE_NAME}/artifacts"] \
+        --region $AWS_DEFAULT_REGION
+      
+      aws s3 cp /tmp/${MODULE_NAME}/ "s3://${S3_BUCKET_NAME}/instances/${INSTANCE_ID}/${MODULE_NAME}/" --recursive
+      aws s3 cp /tmp/current-version.txt "s3://${S3_BUCKET_NAME}/instances/${INSTANCE_ID}/${MODULE_NAME}/current-version.txt"
+      
+      aws ssm send-command \
+        --instance-ids $INSTANCE_ID \
+        --document-name "AWS-RunShellScript" \
+        --parameters commands=["aws s3 sync s3://${S3_BUCKET_NAME}/instances/${INSTANCE_ID}/${MODULE_NAME}/ /app/${MODULE_NAME}/artifacts/"] \
+        --region $AWS_DEFAULT_REGION
+      
+      echo "Artefatto caricato con successo sull'istanza SIT: ${MODULE_NAME}-${VERSION}"
+  only:
+    - main  # Esegui solo per il branch main
+
