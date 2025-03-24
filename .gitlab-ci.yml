@@ -2,11 +2,6 @@ include:
   - project: 'auxdromos/auxdromos-distro'
     file: 'aws/sit/gitlab-ci/.gitlab-ci-template.yml'
 
-stages:
-  - prepare
-  - check_version
-  - build
-  - test
-  - package
-  - upload_to_s3
-  - tag_latest
+deploy_sit:
+  rules:
+    - when: never  # Questo disabilita il job per questo modulo specifico
