@@ -249,11 +249,11 @@ deploy_sit:
     - echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
   script:
     - set -e
-    - echo "Deploying module: $MODULE_NAME"
+    - echo "Deploying module $MODULE_NAME"
     - if [ -f module_info.env ]; then . module_info.env; fi
     - DISTRO_MODULE="auxdromos-distro"
     - if [ "$MODULE_NAME" = "$DISTRO_MODULE" ]; then
-    - echo "Module distro: downloading artifact from S3 and uploading to EC2"
+    - echo "Module distro downloading artifact from S3 and uploading to EC2"
     - mkdir -p /tmp/${MODULE_NAME}
     - aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
     - ssh ${EC2_USER}@${EC2_HOST} "mkdir -p /app/${MODULE_NAME}/artifacts/"
@@ -262,7 +262,7 @@ deploy_sit:
     - scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
     - echo "Skipping deploy script execution for module distro"
     - else
-    - echo "Non-distro module: executing the deploy script on EC2"
+    - echo "Non-distro module executing the deploy script on EC2"
     - ssh ${EC2_USER}@${EC2_HOST} "if [ -f /app/${MODULE_NAME}/deploy.sh ]; then cd /app/${MODULE_NAME} && ./deploy.sh; else echo \"No deploy script found\"; fi"
     - fi
     - echo "Deployment completed for $MODULE_NAME"
