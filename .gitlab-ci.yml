@@ -16,11 +16,12 @@ deploy_sit:
       # Scarica il pacchetto dal bucket S3
       aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
       
-      # Carica il pacchetto sull'istanza SIT
-      INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Environment,Values=SIT" "Name=tag:Name,Values=*${MODULE_NAME}*" --query "Reservations[].Instances[].InstanceId" --output text)
+      # Recupera l'ID dell'istanza da SSM Parameter Store
+      INSTANCE_ID=$(aws ssm get-parameter --name "/auxdromos/environment/sit/instance-id/${MODULE_NAME}" --query "Parameter.Value" --output text --with-decryption)
       
-      if [ -z "$INSTANCE_ID" ]; then
-        echo "Errore: Nessuna istanza trovata per ${MODULE_NAME} in ambiente SIT"
+      if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+        echo "Errore: Impossibile trovare l'ID dell'istanza per ${MODULE_NAME} in SSM Parameter Store"
+        echo "Assicurati che il parametro /auxdromos/environment/sit/instance-id/${MODULE_NAME} esista"
         exit 1
       fi
       
@@ -34,16 +35,18 @@ deploy_sit:
         --parameters commands=["mkdir -p /app/${MODULE_NAME}/artifacts"] \
         --region $AWS_DEFAULT_REGION
       
-      aws s3 cp /tmp/${MODULE_NAME}/ "s3://${S3_BUCKET_NAME}/instances/${INSTANCE_ID}/${MODULE_NAME}/" --recursive
-      aws s3 cp /tmp/current-version.txt "s3://${S3_BUCKET_NAME}/instances/${INSTANCE_ID}/${MODULE_NAME}/current-version.txt"
+      # Carica i file su S3
+      aws s3 cp /tmp/${MODULE_NAME}/ "s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/${VERSION}/" --recursive
+      aws s3 cp /tmp/current-version.txt "s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/current-version.txt"
       
+      # Sincronizza dall'S3 all'istanza
       aws ssm send-command \
         --instance-ids $INSTANCE_ID \
         --document-name "AWS-RunShellScript" \
-        --parameters commands=["aws s3 sync s3://${S3_BUCKET_NAME}/instances/${INSTANCE_ID}/${MODULE_NAME}/ /app/${MODULE_NAME}/artifacts/"] \
+        --parameters commands=["aws s3 sync s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/${VERSION}/ /app/${MODULE_NAME}/artifacts/"] \
         --region $AWS_DEFAULT_REGION
       
       echo "Artefatto caricato con successo sull'istanza SIT: ${MODULE_NAME}-${VERSION}"
   only:
-    - main  # Esegui solo per il branch main
+    - main
 

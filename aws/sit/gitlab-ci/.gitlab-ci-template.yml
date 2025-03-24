@@ -246,16 +246,17 @@ deploy_sit:
     - echo "Utilizzo dell'artefatto già caricato sull'istanza SIT..."
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
-      # Trova l'istanza corretta
-      INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Environment,Values=SIT" "Name=tag:Name,Values=*${MODULE_NAME}*" --query "Reservations[].Instances[].InstanceId" --output text)
+      # Recupera l'ID dell'istanza da SSM Parameter Store
+      INSTANCE_ID=$(aws ssm get-parameter --name "/auxdromos/environment/sit/instance-id/${MODULE_NAME}" --query "Parameter.Value" --output text --with-decryption)
       
-      if [ -z "$INSTANCE_ID" ]; then
-        echo "Errore: Nessuna istanza trovata per ${MODULE_NAME} in ambiente SIT"
+      if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+        echo "Errore: Impossibile trovare l'ID dell'istanza per ${MODULE_NAME} in SSM Parameter Store"
+        echo "Assicurati che il parametro /auxdromos/environment/sit/instance-id/${MODULE_NAME} esista"
         exit 1
       fi
       
       # Verifica se l'artefatto esiste già sull'istanza
-      RESULT=$(aws ssm send-command \
+      CHECK_CMD_ID=$(aws ssm send-command \
         --instance-ids $INSTANCE_ID \
         --document-name "AWS-RunShellScript" \
         --parameters commands=["test -d /app/${MODULE_NAME}/artifacts && echo 'exists' || echo 'not_exists'"] \
@@ -264,29 +265,62 @@ deploy_sit:
         --query "Command.CommandId")
       
       # Attendi che il comando sia completato
-      aws ssm wait command-executed --command-id $RESULT --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION
+      sleep 5
       
       # Controlla il risultato
-      OUTPUT=$(aws ssm get-command-invocation --command-id $RESULT --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION --query "StandardOutputContent" --output text)
+      OUTPUT=$(aws ssm get-command-invocation --command-id $CHECK_CMD_ID --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION --query "StandardOutputContent" --output text)
       
       if [ "$OUTPUT" = "not_exists" ]; then
-        echo "Artefatto non trovato sull'istanza, eseguo il download da S3..."
-        # Scarica il pacchetto dal bucket S3 e caricalo sull'istanza
+        echo "Artefatto non trovato sull'istanza, eseguo il download dall'S3..."
+      
+        # Scarica l'ultima versione dal file marker
+        VERSION_CHECK=$(aws s3 cp "s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/current-version.txt" - || echo "")
+      
+        if [ -z "$VERSION_CHECK" ]; then
+          echo "Errore: Nessuna versione trovata nel bucket S3"
+          exit 1
+        fi
+      
+        ARTIFACT_VERSION=$(echo $VERSION_CHECK | cut -d'-' -f2)
+      
+        # Crea la directory di destinazione
         aws ssm send-command \
           --instance-ids $INSTANCE_ID \
           --document-name "AWS-RunShellScript" \
-          --parameters commands=["mkdir -p /app/${MODULE_NAME}/artifacts && aws s3 sync s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/ /app/${MODULE_NAME}/artifacts/"] \
+          --parameters commands=["mkdir -p /app/${MODULE_NAME}/artifacts"] \
+          --region $AWS_DEFAULT_REGION
+      
+        # Sincronizza i file dall'S3
+        aws ssm send-command \
+          --instance-ids $INSTANCE_ID \
+          --document-name "AWS-RunShellScript" \
+          --parameters commands=["aws s3 sync s3://${S3_BUCKET_NAME}/artifacts/${MODULE_NAME}/${ARTIFACT_VERSION}/ /app/${MODULE_NAME}/artifacts/"] \
           --region $AWS_DEFAULT_REGION
       else
         echo "Artefatto già presente sull'istanza, riutilizzo la versione esistente"
       fi
       
       # Esegui il deployment specifico del modulo
-      aws ssm send-command \
+      DEPLOY_CMD_ID=$(aws ssm send-command \
         --instance-ids $INSTANCE_ID \
         --document-name "AWS-RunShellScript" \
-        --parameters commands=["cd /app/${MODULE_NAME}/artifacts && ./deploy.sh"] \
-        --region $AWS_DEFAULT_REGION
+        --parameters commands=["cd /app/${MODULE_NAME}/artifacts && ./deploy.sh || echo 'Deploy script failed'"] \
+        --region $AWS_DEFAULT_REGION \
+        --output text \
+        --query "Command.CommandId")
+      
+      # Attendi il completamento del deployment
+      sleep 10
+      
+      # Verifica l'esito del deployment
+      DEPLOY_STATUS=$(aws ssm get-command-invocation --command-id $DEPLOY_CMD_ID --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION --query "Status" --output text)
+      
+      if [ "$DEPLOY_STATUS" != "Success" ]; then
+        echo "Errore durante il deployment sull'istanza"
+        aws ssm get-command-invocation --command-id $DEPLOY_CMD_ID --instance-id $INSTANCE_ID --region $AWS_DEFAULT_REGION --query "StandardErrorContent" --output text
+        exit 1
+      fi
+      
+      echo "Deploy completato con successo"
   only:
-    - main  # Esegui solo per il branch main
-
+    - main
