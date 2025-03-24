@@ -3,5 +3,4 @@ include:
     file: 'aws/sit/gitlab-ci/.gitlab-ci-template.yml'
 
 deploy_sit:
-  rules:
-    - when: never  # Questo disabilita il job per questo modulo specifico
+  only: []  # Non verrà mai eseguito
