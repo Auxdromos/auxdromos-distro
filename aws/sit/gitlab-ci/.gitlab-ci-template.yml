@@ -249,52 +249,23 @@ deploy_sit:
     - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
   script:
     - set -e
-    - echo "Verificando la versione esistente su istanza SIT..."
+    - echo "Deploy per modulo: $MODULE_NAME"
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
-      # Verifica se esiste già una versione installata
-      CURRENT_VERSION=""
-      if ssh ${EC2_USER}@${EC2_HOST} "[ -f /app/${MODULE_NAME}/current-version.txt ]"; then
-        CURRENT_VERSION=$(ssh ${EC2_USER}@${EC2_HOST} "cat /app/${MODULE_NAME}/current-version.txt")
-        echo "Versione correntemente installata: $CURRENT_VERSION"
-      else
-        echo "Nessuna versione trovata, procedo con l'installazione"
-      fi
-      
-      # Se la versione corrente è diversa dalla nuova o non esistente, procede con l'installazione
-      if [ "$CURRENT_VERSION" != "${MODULE_NAME}-${VERSION}" ]; then
-        echo "Installazione della nuova versione ${MODULE_NAME}-${VERSION}..."
-      
-        # Crea directory temporanea locale
+      if [ "$MODULE_NAME" = "auxdromos-distro" ]; then
+        echo "Modulo distro: scarico l'artefatto da S3 e lo carico su EC2 (senza eseguire lo script di deploy)"
         mkdir -p /tmp/${MODULE_NAME}
-      
-        # Scarica il pacchetto dal bucket S3
         aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
-      
-        # Prepara la directory remota
         ssh ${EC2_USER}@${EC2_HOST} "mkdir -p /app/${MODULE_NAME}/artifacts/"
-      
-        # Trasferisci i file
         scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
-      
-        # Crea un file marker con la versione attuale
         echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
         scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
-      
-        # Verifica se esiste uno script di deploy specifico sull'istanza e lo esegue
+        echo "Non eseguo lo script di deploy per il modulo distro."
+      else
+        echo "Modulo non-distro: eseguo lo script di deploy già presente sulla macchina EC2"
         ssh ${EC2_USER}@${EC2_HOST} "if [ -f /app/${MODULE_NAME}/deploy.sh ]; then cd /app/${MODULE_NAME} && ./deploy.sh; else echo 'Nessuno script di deploy trovato'; fi"
-      
-        echo "Artefatto deployato con successo su istanza SIT: ${MODULE_NAME}-${VERSION}"
-      else
-        echo "La versione ${MODULE_NAME}-${VERSION} è già installata. Nessuna azione richiesta."
       fi
-  after_script:
-    - |
-      if [ $CI_JOB_STATUS == "success" ]; then
-        echo "Processo deployment completato con successo per ${MODULE_NAME}"
-      else
-        echo "Processo deployment fallito per ${MODULE_NAME}"
-      fi
+    - echo "Deployment completato per $MODULE_NAME"
   only:
     - main
 
