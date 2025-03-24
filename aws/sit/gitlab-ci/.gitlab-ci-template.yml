@@ -14,7 +14,8 @@ extract_module_info:
   stage: prepare
   script:
     - echo "Estrazione delle informazioni del modulo di distribuzione..."
-    - apk add --no-cache grep sed
+    # Rimuovi apk add e usa i comandi che sono già disponibili in maven:amazoncorretto
+    # grep e sed sono già installati nell'immagine Maven
     - |
       if [ -f "pom.xml" ]; then
         export MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
@@ -28,6 +29,9 @@ extract_module_info:
     - echo "MODULE_NAME=$MODULE_NAME" >> module_info.env
     - echo "VERSION=$VERSION" >> module_info.env
     - echo "Modulo $MODULE_NAME, Versione $VERSION"
+    # Aggiungi un comando per verificare che il file esista e mostrarne il contenuto
+    - ls -la module_info.env
+    - cat module_info.env
   artifacts:
     reports:
       dotenv: module_info.env
