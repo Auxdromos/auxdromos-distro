@@ -127,17 +127,11 @@ package_configs:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
 
-    # Installa zip (usa apt per immagini basate su Debian/Ubuntu)
+    # Installa il pacchetto zip usando apt-get (per Debian/Ubuntu)
     - apt-get update && apt-get install -y zip
 
-    # Verifica i file che saranno inclusi nel ZIP
-    - echo "File disponibili per l'archiviazione:"
-    - ls -la aws/ docker/ scripts/ env/ *.yml *.yaml *.properties 2>/dev/null || echo "Nessun file trovato con questi pattern"
-
-    # Crea la directory di destinazione
+    # Il resto del tuo script
     - mkdir -p dist
-
-    # Usa un approccio più robusto per creare il ZIP
     - |
       FILES_TO_ZIP=""
       for DIR in aws docker scripts env; do
@@ -159,19 +153,12 @@ package_configs:
         zip -r "dist/$MODULE_NAME-$VERSION.zip" $FILES_TO_ZIP
       else
         echo "AVVISO: Nessun file trovato da includere nel ZIP"
-        # Crea un ZIP vuoto per evitare errori successivi
-        echo "Creazione di un file ZIP vuoto"
         touch empty.txt
         zip -r "dist/$MODULE_NAME-$VERSION.zip" empty.txt
         rm empty.txt
       fi
 
-    # Crea il manifest
     - echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"$CI_COMMIT_REF_NAME\",\"commitHash\":\"$CI_COMMIT_SHA\"}" > dist/manifest.json
-
-    # Verifica il contenuto della directory dist
-    - ls -la dist/
-    - du -h dist/*
   dependencies:
     - extract_module_info
     - check_version
