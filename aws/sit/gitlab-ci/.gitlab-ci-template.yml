@@ -126,10 +126,52 @@ package_configs:
     - set -x
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
-    - apt-get update && apt-get install -y zip  # Sostituzione di apk add con apt-get
+
+    # Installa zip (usa apt per immagini basate su Debian/Ubuntu)
+    - apt-get update && apt-get install -y zip
+
+    # Verifica i file che saranno inclusi nel ZIP
+    - echo "File disponibili per l'archiviazione:"
+    - ls -la aws/ docker/ scripts/ env/ *.yml *.yaml *.properties 2>/dev/null || echo "Nessun file trovato con questi pattern"
+
+    # Crea la directory di destinazione
     - mkdir -p dist
-    - zip -r "dist/$MODULE_NAME-$VERSION.zip" aws/ docker/ scripts/ env/ *.yml *.yaml *.properties || echo "Nessun file da includere"
+
+    # Usa un approccio più robusto per creare il ZIP
+    - |
+      FILES_TO_ZIP=""
+      for DIR in aws docker scripts env; do
+        if [ -d "$DIR" ]; then
+          FILES_TO_ZIP="$FILES_TO_ZIP $DIR/"
+          echo "Aggiungo directory $DIR al ZIP"
+        fi
+      done
+      
+      for EXT in yml yaml properties; do
+        if ls *.$EXT 1>/dev/null 2>&1; then
+          FILES_TO_ZIP="$FILES_TO_ZIP *.$EXT"
+          echo "Aggiungo file *.$EXT al ZIP"
+        fi
+      done
+      
+      if [ -n "$FILES_TO_ZIP" ]; then
+        echo "Creazione ZIP con: $FILES_TO_ZIP"
+        zip -r "dist/$MODULE_NAME-$VERSION.zip" $FILES_TO_ZIP
+      else
+        echo "AVVISO: Nessun file trovato da includere nel ZIP"
+        # Crea un ZIP vuoto per evitare errori successivi
+        echo "Creazione di un file ZIP vuoto"
+        touch empty.txt
+        zip -r "dist/$MODULE_NAME-$VERSION.zip" empty.txt
+        rm empty.txt
+      fi
+
+    # Crea il manifest
     - echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"$CI_COMMIT_REF_NAME\",\"commitHash\":\"$CI_COMMIT_SHA\"}" > dist/manifest.json
+
+    # Verifica il contenuto della directory dist
+    - ls -la dist/
+    - du -h dist/*
   dependencies:
     - extract_module_info
     - check_version
@@ -142,64 +184,60 @@ upload_to_s3:
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Caricamento artefatti su S3 per $MODULE_NAME versione $VERSION"
+
+    # Verifica che i file esistano nella directory dist/
+    - ls -la dist/
+
+    # Verifica esplicitamente l'esistenza del file ZIP
+    - if [ ! -f "dist/$MODULE_NAME-$VERSION.zip" ]; then
+      echo "ERRORE File ZIP non trovato in dist/$MODULE_NAME-$VERSION.zip"
+      exit 1
+      fi
+
+    # Caricamento del file ZIP
+    - aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip"
+
+    # Caricamento del manifest
+    - aws s3 cp "dist/manifest.json" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/manifest.json"
+
+    # Verifica che i file siano stati caricati su S3
+    - aws s3 ls "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/" --recursive
   dependencies:
-    - package_configs
     - extract_module_info
-  script: |
-    set -e
-    set -o pipefail
-    
-    if [ -f module_info.env ]; then
-      source module_info.env
-    fi
-    
-    echo "Caricamento del pacchetto su S3 per $MODULE_NAME versione $VERSION"
-    
-    # Determina il percorso S3 in base al branch
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      S3_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-    else
-      S3_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
-    fi
-    
-    # Carica i file
-    aws s3 cp dist/ $S3_PATH --recursive
-    
-    echo "Caricamento su S3 completato al percorso: $S3_PATH"
-
-
+    - package_configs
 
 tag_latest:
   stage: tag_latest
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Aggiornando tag 'latest' per $MODULE_NAME"
+
+    # Elenco i file disponibili nel bucket
+    - echo "Contenuto della directory $MODULE_NAME/$VERSION/ su S3:"
+    - aws s3 ls "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/" --recursive
+
+    # Verifica se il file ZIP esiste
+    - >
+      if aws s3 ls "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip" >/dev/null 2>&1; then
+        echo "File ZIP trovato, procedo con l'aggiornamento del tag 'latest'"
+        aws s3 cp "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/latest/$MODULE_NAME-latest.zip"
+        aws s3 cp "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/manifest.json" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/latest/manifest.json"
+        echo "Tag latest aggiornato con successo."
+      else
+        echo "ERRORE: File ZIP $MODULE_NAME-$VERSION.zip non trovato su S3."
+        echo "Il manifest.json è stato caricato, ma il file ZIP è mancante."
+        echo "Verifica il job package_configs e upload_to_s3 per risolvere il problema."
+        exit 1
+      fi
   dependencies:
-    - upload_to_s3
     - extract_module_info
-  script: |
-    if [ -f module_info.env ]; then
-      source module_info.env
-    fi
-    
-    echo "Aggiornando tag 'latest' per $MODULE_NAME"
-    
-    # Determina i percorsi S3 in base al branch
-    if [ "$CI_COMMIT_REF_NAME" == "main" ]; then
-      SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
-    
-      # Copia il file ZIP della versione specifica come "latest"
-      aws s3 cp "${SOURCE_PATH}${MODULE_NAME}-${VERSION}.zip" "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${MODULE_NAME}-latest.zip"
-    
-      echo "Tag latest aggiornato con successo per la versione stabile $VERSION"
-    else
-      SOURCE_PATH="s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${VERSION}/"
-    
-      # Per i branch di sviluppo, aggiorniamo un tag "develop-latest"
-      aws s3 cp "${SOURCE_PATH}${MODULE_NAME}-${VERSION}.zip" "s3://${S3_BUCKET_NAME}/develop/${MODULE_NAME}/${MODULE_NAME}-develop-latest.zip"
-    
-      echo "Tag develop-latest aggiornato con successo per la versione $VERSION"
-    fi
+    - upload_to_s3
   only:
     - main
 
