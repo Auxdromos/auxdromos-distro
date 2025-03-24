@@ -9,7 +9,9 @@ deploy_sit:
     entrypoint: [""]
   dependencies:
     - extract_module_info
+  timeout: 15m
   script:
+    - set -e  # Interrompe in caso di errore
     - echo "Caricamento dell'ultima versione su istanza SIT..."
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
@@ -47,6 +49,14 @@ deploy_sit:
         --region $AWS_DEFAULT_REGION
       
       echo "Artefatto caricato con successo sull'istanza SIT: ${MODULE_NAME}-${VERSION}"
+  after_script:
+    - |
+      if [ $CI_JOB_STATUS == "success" ]; then
+        echo "Deployment completato con successo per ${MODULE_NAME}-${VERSION}"
+      else
+        echo "Deployment fallito per ${MODULE_NAME}-${VERSION}"
+      fi
   only:
     - main
+
 
