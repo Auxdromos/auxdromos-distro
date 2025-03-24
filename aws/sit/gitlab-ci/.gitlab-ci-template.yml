@@ -81,6 +81,7 @@ check_version:
     fi
 
 
+
 build:
   stage: build
   image: maven:3.9.9-amazoncorretto-17  # Usa l'immagine Maven appropriata
@@ -125,7 +126,7 @@ package_configs:
     - set -x
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
-    - apk add --no-cache zip
+    - apt-get update && apt-get install -y zip  # Sostituzione di apk add con apt-get
     - mkdir -p dist
     - zip -r "dist/$MODULE_NAME-$VERSION.zip" aws/ docker/ scripts/ env/ *.yml *.yaml *.properties || echo "Nessun file da includere"
     - echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"$CI_COMMIT_REF_NAME\",\"commitHash\":\"$CI_COMMIT_SHA\"}" > dist/manifest.json
@@ -135,9 +136,6 @@ package_configs:
   artifacts:
     paths:
       - dist/
-  only:
-    - develop
-    - main
 
 upload_to_s3:
   stage: upload_to_s3
@@ -168,6 +166,7 @@ upload_to_s3:
     aws s3 cp dist/ $S3_PATH --recursive
     
     echo "Caricamento su S3 completato al percorso: $S3_PATH"
+
 
 
 tag_latest:
