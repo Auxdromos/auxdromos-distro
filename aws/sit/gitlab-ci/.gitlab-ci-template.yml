@@ -179,11 +179,14 @@ upload_to_s3:
     # Verifica che i file esistano nella directory dist/
     - ls -la dist/
 
-    # Verifica esplicitamente l'esistenza del file ZIP
-    - if [ ! -f "dist/$MODULE_NAME-$VERSION.zip" ]; then
-      echo "ERRORE File ZIP non trovato in dist/$MODULE_NAME-$VERSION.zip"
-      exit 1
+    # Verifica esplicitamente l'esistenza del file ZIP (con sintassi corretta)
+    - |
+      if [ ! -f "dist/$MODULE_NAME-$VERSION.zip" ]; then
+        echo "ERRORE: File ZIP non trovato in dist/$MODULE_NAME-$VERSION.zip"
+        exit 1
       fi
+
+    - echo "Carico il file da dist/$MODULE_NAME-$VERSION.zip a s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip"
 
     # Caricamento del file ZIP
     - aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip"
