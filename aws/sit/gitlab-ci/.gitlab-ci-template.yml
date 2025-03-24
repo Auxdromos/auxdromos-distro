@@ -243,9 +243,13 @@ deploy_sit:
   timeout: 15m
   before_script:
     - apk add --no-cache openssh-client bash aws-cli
-    - eval $(ssh-agent -s)
-    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' | ssh-add -
     - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    # Write key to file with proper line breaks
+    - echo "$EC2_PRIVATE_KEY" | sed 's/\\n/\n/g' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    # Validate key format
+    - ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null 2>&1 || (echo "Invalid private key"; exit 1)
     - echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
   script:
     - set -e
