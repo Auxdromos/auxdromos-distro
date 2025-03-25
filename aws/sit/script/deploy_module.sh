@@ -15,6 +15,9 @@ fi
 # Creiamo la directory necessaria se non esiste
 mkdir -p ${BASE_PATH}/aws/sit
 
+# Assicura che la rete Docker esista
+docker network create auxdromos-network 2>/dev/null || true
+
 # Carica le variabili da BASE_DIR/env/deploy.env
 if [[ -f "$BASE_DIR/env/deploy.env" ]]; then
   source "$BASE_DIR/env/deploy.env"
@@ -50,7 +53,7 @@ check_image_exists() {
   local REPOSITORY="auxdromos-${MODULE_NAME}"
   local REPOSITORY_NO_PREFIX="${MODULE_NAME}"
 
-  echo "Verifico esistenza dell'immagine su ECR..."
+  echo "Verifico esistenza dell'immagine ${MODULE_NAME} su ECR..."
 
   # Prima prova con il prefisso auxdromos (come fa la pipeline)
   if aws ecr describe-repositories --repository-names "$REPOSITORY" &>/dev/null; then
@@ -116,189 +119,218 @@ deploy_keycloak() {
   fi
 
   source "$BASE_DIR/env/keycloak.env"
-  if [[ -z "$POSTGRES_USER" || -z "$POSTGRES_PASSWORD" || -z "$KEYCLOAK_ADMIN" || -z "$KEYCLOAK_ADMIN_PASSWORD" ]]; then
-    echo "ERRORE: Variabili di ambiente mancanti nel file keycloak.env"
-    exit 1
-  fi
 
-  # Deploy di Keycloak usando il file docker-compose specifico
-  docker-compose -f "$BASE_DIR/docker/docker-compose-keycloak.yml" up -d
+  # Arresta e rimuovi i container esistenti, se presenti
+  docker stop keycloak-db-auxdromos auxdromos-keycloak 2>/dev/null || true
+  docker rm keycloak-db-auxdromos auxdromos-keycloak 2>/dev/null || true
 
-  # Verifica che il container sia partito
-  if ! docker ps | grep -q "auxdromos-keycloak"; then
-    echo "ERRORE: Il container di Keycloak non è stato avviato correttamente"
-    docker logs auxdromos-keycloak
-    exit 1
-  fi
+  # Avvia il container del database PostgreSQL per Keycloak
+  docker run -d \
+    --name keycloak-db-auxdromos \
+    --network auxdromos-network \
+    -e POSTGRES_DB="${POSTGRES_DB}" \
+    -e POSTGRES_USER="${POSTGRES_USER}" \
+    -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+    -v keycloak-data:/var/lib/postgresql/data \
+    postgres:14
 
-  echo "Deploy di Keycloak completato!"
-  echo "Attesa per l'avvio di Keycloak..."
+  # Attendi che il database sia pronto
+  echo "Attendi che il database Keycloak sia pronto..."
   sleep 10
 
-  # Controlla periodicamente se Keycloak è pronto
-  ATTEMPTS=0
-  MAX_ATTEMPTS=12  # 2 minuti in totale (12 * 10 secondi)
-  while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost:${EXTERNAL_PORT}/health | grep -q "200"; then
-      echo "Keycloak è pronto!"
+  # Avvia il container Keycloak
+  docker run -d \
+    --name auxdromos-keycloak \
+    --network auxdromos-network \
+    -p 8082:8080 \
+    -e DB_VENDOR=postgres \
+    -e DB_ADDR=keycloak-db-auxdromos \
+    -e DB_DATABASE="${POSTGRES_DB}" \
+    -e DB_USER="${POSTGRES_USER}" \
+    -e DB_PASSWORD="${POSTGRES_PASSWORD}" \
+    -e KEYCLOAK_ADMIN="${KEYCLOAK_ADMIN}" \
+    -e KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD}" \
+    quay.io/keycloak/keycloak:26.0.7 start-dev
+
+  # Verifica che Keycloak sia in esecuzione
+  echo "Verifica che Keycloak sia in esecuzione..."
+  for i in {1..12}; do
+    if check_keycloak; then
+      echo "✅ Keycloak è in esecuzione!"
       break
     fi
-    echo "Attendi... ($ATTEMPTS/$MAX_ATTEMPTS)"
-    ATTEMPTS=$((ATTEMPTS + 1))
+    echo "Attendi l'avvio di Keycloak... ($i/12)"
     sleep 10
+    if [ $i -eq 12 ]; then
+      echo "❌ Timeout durante l'avvio di Keycloak."
+      exit 1
+    fi
   done
 
-  if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
-    echo "ERRORE: Timeout nell'attesa che Keycloak diventasse pronto"
-    exit 1
-  fi
-
-  # Esecuzione dello script di setup di Keycloak
-  echo "Esecuzione dello script di setup di Keycloak..."
-  bash "$BASE_DIR/aws/sit/setup/keycloak-setup.sh"
-  echo "Setup di Keycloak completato!"
+  echo "Keycloak deployato con successo!"
 }
 
-# Funzione per effettuare il deploy di un modulo
+# Funzione per deployare un modulo generico
 deploy_module() {
   local MODULE_NAME=$1
-  echo "===== Deploying $MODULE_NAME... ====="
+  echo "===== Deploying ${MODULE_NAME}... ====="
 
-  # Verifica se l'immagine per questo modulo esiste
-  if ! check_image_exists "$MODULE_NAME"; then
-    echo "Attenzione: Nessuna immagine trovata per il modulo $MODULE_NAME su ECR e impossibile creare il repository. Il deployment sarà saltato."
-    return 0
-  fi
+  # Debug: verifichiamo il repository
+  echo "DEBUG: Verificando repository auxdromos-${MODULE_NAME}"
+  echo "DEBUG: AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}"
+  echo "DEBUG: Elenco di tutti i repository:"
+  aws ecr describe-repositories
 
-  # Recupera l'ultima versione stabile del modulo da ECR
-  echo "Ricerca dell'ultima versione per il repository $ECR_REPOSITORY_NAME..."
-  LATEST_VERSION=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY_NAME" \
-                   --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text)
+  echo "DEBUG: Tentativo esplicito di trovare auxdromos-${MODULE_NAME}:"
+  aws ecr describe-repositories --repository-names "auxdromos-${MODULE_NAME}" || true
 
-  if [[ "$LATEST_VERSION" == "None" || -z "$LATEST_VERSION" ]]; then
-    echo "Attenzione: Nessuna versione trovata per il modulo $MODULE_NAME nel repository $ECR_REPOSITORY_NAME. Il deployment sarà saltato."
-    return 0
-  fi
-
-  echo "Ultima versione trovata: $LATEST_VERSION"
-
-  # Assicura che la rete esista
-  docker network create auxdromos-network 2>/dev/null || true
-
-  # Prepara l'URI completo dell'immagine
-  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-  IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${LATEST_VERSION}"
-
-  echo "Utilizzo del repository ECR: $ECR_REPOSITORY_NAME"
-  echo "Immagine completa: $IMAGE_URI"
-
-  # Login al repository ECR
-  aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-
-  # Pull dell'immagine da ECR
-  echo "Pulling immagine $IMAGE_URI..."
-  docker pull "$IMAGE_URI"
-
-  # Determina il nome del container
-  CONTAINER_NAME="auxdromos-${MODULE_NAME}"
-
-  # Controlla se esiste già un container con questo nome e lo rimuove
-  if docker ps -a | grep -q "$CONTAINER_NAME"; then
-    echo "Rimozione del container esistente $CONTAINER_NAME..."
-    docker rm -f "$CONTAINER_NAME"
-  fi
-
-  # Determina il file docker-compose da utilizzare (modulo specifico o generico)
-  DOCKER_COMPOSE_FILE="$BASE_DIR/docker/docker-compose-${MODULE_NAME}.yml"
-  if [[ ! -f "$DOCKER_COMPOSE_FILE" ]]; then
-    echo "File docker-compose specifico per $MODULE_NAME non trovato, uso quello generico..."
-    DOCKER_COMPOSE_FILE="$BASE_DIR/docker/docker-compose-module.yml"
-  fi
-
-  # Esporta variabili necessarie per docker-compose
-  export MODULE_NAME
-  export CONTAINER_NAME
-  export IMAGE_URI
-
-  # Deploy del modulo usando docker-compose
-  echo "Deploying $MODULE_NAME usando $DOCKER_COMPOSE_FILE..."
-  docker-compose -f "$DOCKER_COMPOSE_FILE" up -d
-
-  # Verifica che il container sia partito
-  if ! docker ps | grep -q "$CONTAINER_NAME"; then
-    echo "ERRORE: Il container $CONTAINER_NAME non è stato avviato correttamente"
-    docker logs "$CONTAINER_NAME"
+  # Verifica se l'immagine esiste su ECR
+  if ! check_image_exists "${MODULE_NAME}"; then
+    echo "⚠️ Nessuna immagine trovata per ${MODULE_NAME}. Il deploy verrà saltato."
     return 1
   fi
 
-  echo "Deploy di $MODULE_NAME completato con successo!"
-}
+  echo "Immagini trovate nel repository ${ECR_REPOSITORY_NAME}"
 
-# Funzione per il deploy di tutti i moduli nell'ordine specificato
-deploy_all() {
-  echo "Deploying tutti i moduli nell'ordine: $MODULE_ORDER"
+  # Ottieni la versione più recente dal repository ECR
+  LATEST_VERSION=$(aws ecr describe-images --repository-name "${ECR_REPOSITORY_NAME}" \
+    --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text)
 
-  # Deploy Keycloak prima di tutto se presente nella lista
-  if [[ "$MODULE_ORDER" =~ "idp" || "$MODULES" =~ "idp" ]]; then
-    deploy_keycloak
+  # Se il risultato è "None" o vuoto, imposta una versione di default o interrompi
+  if [[ "$LATEST_VERSION" == "None" || -z "$LATEST_VERSION" ]]; then
+    echo "⚠️ Nessun tag trovato per l'immagine più recente. Utilizzo 'latest'."
+    LATEST_VERSION="latest"
   fi
 
-  # Deploy di ciascun modulo nell'ordine specificato
-  for module in $MODULE_ORDER; do
-    # Salta idp poiché è già gestito da deploy_keycloak
-    if [[ "$module" != "idp" ]]; then
-      echo "Deployando $module secondo l'ordine definito..."
-      deploy_module "$module"
-      # Aggiungi un piccolo ritardo tra i deployment
-      sleep 5
-    fi
-  done
+  echo "Ultima versione per ${MODULE_NAME} è ${LATEST_VERSION}"
 
-  # Verifica se ci sono moduli in MODULES che non sono in MODULE_ORDER
-  for module in $MODULES; do
-    if [[ ! "$MODULE_ORDER" =~ $module && "$module" != "idp" ]]; then
-      echo "Deployando $module (non presente nell'ordine definito)..."
-      deploy_module "$module"
-      sleep 5
-    fi
-  done
-}
+  # Connettersi al repository ECR - usa AWS_ACCOUNT_ID o estrai dall'URI repository
+  if [[ -z "$AWS_ACCOUNT_ID" ]]; then
+    # Estrai l'ID account dall'URI del repository
+    REPO_INFO=$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY_NAME}" --query 'repositories[0].repositoryUri' --output text)
+    AWS_ACCOUNT_ID=$(echo $REPO_INFO | cut -d'.' -f1)
+  fi
 
-# Funzione principale per eseguire il deployment
-main() {
-  # Assicurati che il login ECR sia valido
-  echo "Login AWS ECR..."
-  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-  aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+  echo "Autenticazione al repository ECR..."
+  aws ecr get-login-password | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
 
-  # Lista dei repository disponibili per controllo
-  echo "Repository ECR disponibili:"
-  aws ecr describe-repositories --query "repositories[].repositoryName" --output table
+  # Pull dell'immagine
+  REPOSITORY_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${LATEST_VERSION}"
+  echo "Pull dell'immagine ${REPOSITORY_URI}"
+  docker pull "${REPOSITORY_URI}"
 
-  if [[ "$MODULO" == "all" ]]; then
-    deploy_all
-  elif [[ "$MODULO" == "keycloak" || "$MODULO" == "idp" ]]; then
-    deploy_keycloak
+  # Stoppa e rimuovi il container esistente se presente
+  CONTAINER_NAME="auxdromos-${MODULE_NAME}"
+  if docker ps -a | grep -q "${CONTAINER_NAME}"; then
+    echo "Stopping e rimuovendo container esistente ${CONTAINER_NAME}..."
+    docker stop "${CONTAINER_NAME}" || true
+    docker rm "${CONTAINER_NAME}" || true
+  fi
+
+  # Determina le porte e le variabili d'ambiente specifiche per ogni modulo
+  case "${MODULE_NAME}" in
+    discovery)
+      PORT="8761"
+      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit"
+      ;;
+    config-server)
+      PORT="8888"
+      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
+      ;;
+    gateway)
+      PORT="8080"
+      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
+      ;;
+    rdbms)
+      PORT="8090"
+      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
+      ;;
+    backend)
+      PORT="8091"
+      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
+      ;;
+    idp)
+      PORT="8092"
+      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
+      ;;
+    *)
+      PORT="8080"
+      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
+      ;;
+  esac
+
+  # Aggiungi variabili d'ambiente da AWS se disponibili
+  if [[ ! -z "$AWS_ACCESS_KEY_ID" && ! -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+    ENV_VARS="$ENV_VARS -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION"
+  fi
+
+  # Se si tratta del backend, aggiungi le variabili per il database se non è rdbms
+  if [[ "${MODULE_NAME}" == "backend" && ! -z "$DB_HOST" ]]; then
+    ENV_VARS="$ENV_VARS -e SPRING_DATASOURCE_URL=jdbc:postgresql://${DB_HOST}:5432/auxdromos?currentSchema=auxdromos&options=-c%20search_path%3Dauxdromos"
+    ENV_VARS="$ENV_VARS -e SPRING_DATASOURCE_USERNAME=${DB_USER:-postgres}"
+    ENV_VARS="$ENV_VARS -e SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-BbzcaI5HKm5wr3}"
+  fi
+
+  # Avvia il nuovo container
+  echo "Avvio container ${CONTAINER_NAME} con porta ${PORT}..."
+  docker run -d \
+    --name "${CONTAINER_NAME}" \
+    --network auxdromos-network \
+    -p "${PORT}:${PORT}" \
+    ${ENV_VARS} \
+    "${REPOSITORY_URI}"
+
+  # Verifica che il container sia stato avviato
+  if docker ps | grep -q "${CONTAINER_NAME}"; then
+    echo "✅ Container ${CONTAINER_NAME} avviato con successo!"
   else
-    # Verifica se il modulo è nella lista dei moduli disponibili
-    if [[ ! " $MODULES " =~ " $MODULO " ]]; then
-      echo "ATTENZIONE: Il modulo $MODULO non è presente nella lista dei moduli configurati ($MODULES)."
-      echo "Continuare comunque? (s/n)"
-      read -r RISPOSTA
-      if [[ "$RISPOSTA" != "s" && "$RISPOSTA" != "S" ]]; then
-        echo "Operazione annullata."
-        exit 0
-      fi
-    fi
-    deploy_module "$MODULO"
+    echo "❌ Errore nell'avvio del container ${CONTAINER_NAME}!"
+    docker logs "${CONTAINER_NAME}"
+    return 1
   fi
 
-  echo "=== Deploy completato con successo! ==="
+  # Mostra i primi log del container
+  echo "Mostrando i primi log del container..."
+  sleep 5  # Attendi che l'applicazione abbia avviato
+  docker logs "${CONTAINER_NAME}"
+
+  echo "Deploy del modulo ${MODULE_NAME} completato!"
+  return 0
 }
 
-# Mostra la lista dei moduli disponibili e l'ordine di deployment
-echo "Moduli disponibili: $MODULES"
-echo "Ordine di deployment: $MODULE_ORDER"
+# Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
+deploy_all() {
+  # Successione predefinita dei moduli da deployare
+  for module in $MODULE_ORDER; do
+    echo "Deploying $module..."
 
-# Esecuzione della funzione principale
-main
+    if [[ "$module" == "idp" ]]; then
+      deploy_keycloak
+    else
+      deploy_module "$module"
+    fi
+
+    # Attendi tra i deploy per assicurarti che i servizi siano pronti
+    sleep 5
+  done
+}
+
+# Logica principale per scegliere cosa deployare
+if [[ "$MODULO" == "all" ]]; then
+  echo "Deploying all modules..."
+  deploy_all
+else
+  # Verifica se il modulo specificato è valido
+  if [[ " $MODULES " =~ " $MODULO " ]]; then
+    if [[ "$MODULO" == "idp" ]]; then
+      deploy_keycloak
+    else
+      deploy_module "$MODULO"
+    fi
+  else
+    echo "Errore: modulo non valido. Moduli disponibili: $MODULES"
+    exit 1
+  fi
+fi
+
+echo "=== Deploy completato $(date) ==="

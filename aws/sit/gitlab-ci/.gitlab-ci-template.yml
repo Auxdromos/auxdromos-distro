@@ -64,27 +64,24 @@ check_version:
         exit 1
       fi
     
-      # Su main, controlliamo sia ECR che S3
+      # Su main, controlliamo solo ECR (perché S3 può già esistere da develop)
       if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
         echo "Errore: La versione '$VERSION' è già presente su ECR."
         exit 1
       fi
     
-      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
-      if [[ "$FOUND" -gt 0 ]]; then
-        echo "Errore: La versione '$VERSION' è già presente su S3."
-        exit 1
-      fi
+      echo "Versione valida per main. Procedo..."
     else
-      # Per develop e altri branch, controlliamo solo S3
-      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
-      echo "DEBUG FOUND = $FOUND"
+      # Per develop e altri branch, controlliamo solo S3 sotto un path specifico per develop
+      DEVELOP_PATH="develop/${MODULE_NAME}/${VERSION}/"
+      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${DEVELOP_PATH}" 2>/dev/null | wc -l || echo 0)
+      echo "DEBUG FOUND = $FOUND per path ${DEVELOP_PATH}"
 
       if [[ "$FOUND" -gt 0 ]]; then
-        echo "Versione già presente su S3. Interrompo la pipeline."
+        echo "Versione già presente su S3 in develop. Interrompo la pipeline."
         exit 1
       else
-        echo "Versione non presente su S3. Procedo..."
+        echo "Versione non presente su S3 in develop. Procedo..."
       fi
     fi
 
@@ -215,65 +212,81 @@ upload_to_s3:
   image:
     name: amazon/aws-cli:latest
     entrypoint: [ "" ]
-  script:
-    - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "Caricamento artefatti su S3 per $MODULE_NAME versione $VERSION"
-
-    # Verifica che i file esistano nella directory dist/
-    - ls -la dist/
-
-    # Verifica esplicitamente l'esistenza del file ZIP (con sintassi corretta)
-    - |
-      if [ ! -f "dist/$MODULE_NAME-$VERSION.zip" ]; then
-        echo "ERRORE: File ZIP non trovato in dist/$MODULE_NAME-$VERSION.zip"
-        exit 1
-      fi
-
-    - echo "Carico il file da dist/$MODULE_NAME-$VERSION.zip a s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip"
-
-    # Caricamento del file ZIP
-    - aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip"
-
-    # Caricamento del manifest
-    - aws s3 cp "dist/manifest.json" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/manifest.json"
-
-    # Verifica che i file siano stati caricati su S3
-    - aws s3 ls "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/" --recursive
   dependencies:
     - extract_module_info
-    - package_configs
+    - build
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+
+    # Determina il path S3 in base al branch
+    - |
+      if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
+        S3_PATH="${MODULE_NAME}/${VERSION}/"
+      else
+        S3_PATH="develop/${MODULE_NAME}/${VERSION}/"
+      fi
+
+    - echo "Upload su S3 per $MODULE_NAME versione $VERSION nel path $S3_PATH"
+
+    # Upload dei file JAR
+    - |
+      for jar in target/*.jar; do
+        if [ -f "$jar" ]; then
+          jar_filename=$(basename "$jar")
+          echo "Uploading $jar_filename..."
+          aws s3 cp "$jar" "s3://${S3_BUCKET_NAME}/${S3_PATH}${jar_filename}"
+        fi
+      done
+
+    # Upload dei file di distribuzione
+    - |
+      if [ -d "target/distribution/" ]; then
+        echo "Uploading distribution files..."
+        aws s3 cp target/distribution/ "s3://${S3_BUCKET_NAME}/${S3_PATH}distribution/" --recursive
+      fi
+
+    # Upload del file build-info.json
+    - |
+      if [ -f "target/build-info.json" ]; then
+        echo "Uploading build info..."
+        aws s3 cp target/build-info.json "s3://${S3_BUCKET_NAME}/${S3_PATH}build-info.json"
+      fi
 
 tag_latest:
   stage: tag_latest
   image:
     name: amazon/aws-cli:latest
     entrypoint: [ "" ]
-  script:
-    - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "Aggiornando tag 'latest' per $MODULE_NAME"
-
-    # Elenco i file disponibili nel bucket
-    - echo "Contenuto della directory $MODULE_NAME/$VERSION/ su S3:"
-    - aws s3 ls "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/" --recursive
-
-    # Verifica se il file ZIP esiste
-    - >
-      if aws s3 ls "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip" >/dev/null 2>&1; then
-        echo "File ZIP trovato, procedo con l'aggiornamento del tag 'latest'"
-        aws s3 cp "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/latest/$MODULE_NAME-latest.zip"
-        aws s3 cp "s3://${S3_BUCKET_NAME}/$MODULE_NAME/$VERSION/manifest.json" "s3://${S3_BUCKET_NAME}/$MODULE_NAME/latest/manifest.json"
-        echo "Tag latest aggiornato con successo."
-      else
-        echo "ERRORE: File ZIP $MODULE_NAME-$VERSION.zip non trovato su S3."
-        echo "Il manifest.json è stato caricato, ma il file ZIP è mancante."
-        echo "Verifica il job package_configs e upload_to_s3 per risolvere il problema."
-        exit 1
-      fi
   dependencies:
     - extract_module_info
     - upload_to_s3
-  only:
-    - main
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+
+    # Determina il path S3 in base al branch
+    - |
+      if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
+        S3_PATH="${MODULE_NAME}/"
+        LATEST_PATH="${MODULE_NAME}/latest.json"
+      else
+        S3_PATH="develop/${MODULE_NAME}/"
+        LATEST_PATH="develop/${MODULE_NAME}/latest.json"
+      fi
+
+    # Crea un file JSON con i dettagli dell'ultima versione
+    - |
+      cat > latest.json <<EOF
+      {
+        "moduleName": "$MODULE_NAME",
+        "latestVersion": "$VERSION",
+        "updateDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+        "branch": "$CI_COMMIT_REF_NAME",
+        "commitHash": "$CI_COMMIT_SHA"
+      }
+      EOF
+
+    - echo "Tagging della versione $VERSION come 'latest' per $MODULE_NAME nel path $S3_PATH"
+    - aws s3 cp latest.json "s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
 
 deploy_sit:
   stage: deploy_sit
@@ -334,17 +347,44 @@ deploy_sit:
     # Carica lo script in S3 per essere accessibile dall'istanza EC2
     - aws s3 cp deploy_script.sh s3://${S3_BUCKET_NAME}/scripts/deploy_${MODULE_NAME}_${VERSION}.sh
 
-    # Esegui SSM con un comando che scarica ed esegue lo script da S3
-    - |
-      aws ssm send-command \
-        --document-name "AWS-RunShellScript" \
-        --targets "Key=tag:Environment,Values=SIT" "Key=tag:Application,Values=Auxdromos" \
-        --parameters commands='aws s3 cp s3://'${S3_BUCKET_NAME}'/scripts/deploy_'${MODULE_NAME}'_'${VERSION}'.sh /tmp/deploy_script.sh && chmod +x /tmp/deploy_script.sh && /tmp/deploy_script.sh' \
-        --comment "Deploy di ${MODULE_NAME} v${VERSION} in SIT" \
-        --output text
+    # Avvia il deployment
+    - COMMAND_ID=$(aws ssm send-command --document-name "AWS-RunShellScript" --instance-ids "$INSTANCE_ID" --parameters commands="$DEPLOY_SCRIPT" --output text --query "Command.CommandId")
+    - echo "Deployment avviato con CommandID: $COMMAND_ID"
 
-    # Attendi il completamento del deploy
-    - echo "Deployment avviato su SIT. Verifica lo stato del deployment nella console AWS Systems Manager."
+    # Attendi che il comando sia completato e mostra i log in tempo reale
+    - |
+      echo "Monitoraggio dell'esecuzione del comando..."
+      STATUS="Pending"
+      
+      while [[ "$STATUS" == "Pending" || "$STATUS" == "InProgress" ]]; do
+        sleep 5
+        CMD_OUTPUT=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --output json)
+        STATUS=$(echo "$CMD_OUTPUT" | grep -o '"Status": "[^"]*"' | cut -d'"' -f4)
+        echo "Stato corrente: $STATUS"
+      
+        # Mostra log dell'esecuzione se disponibili
+        if [[ $(echo "$CMD_OUTPUT" | grep -o '"StandardOutputContent": "[^"]*"' | wc -l) -gt 0 ]]; then
+          echo "--- LOG OUTPUT ---"
+          echo "$CMD_OUTPUT" | grep -o '"StandardOutputContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g'
+          echo "-----------------"
+        fi
+      
+        # Mostra anche gli errori se ce ne sono
+        if [[ $(echo "$CMD_OUTPUT" | grep -o '"StandardErrorContent": "[^"]*"' | wc -l) -gt 0 ]]; then
+          echo "--- ERROR LOG ---"
+          echo "$CMD_OUTPUT" | grep -o '"StandardErrorContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g'
+          echo "----------------"
+        fi
+      done
+      
+      # Verifica lo stato finale
+      if [[ "$STATUS" == "Success" ]]; then
+        echo "✅ Deployment completato con successo!"
+        exit 0
+      else
+        echo "❌ Deployment fallito con stato: $STATUS"
+        exit 1
+      fi
   environment:
     name: sit
     url: https://sit.auxdromos.com
@@ -362,30 +402,48 @@ cleanup_s3:
     - extract_module_info
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "Pulizia S3 per $MODULE_NAME, mantenendo solo le ultime 5 versioni..."
+
+    # Determina il path S3 in base al branch
     - |
-      # Ottieni lista di tutte le versioni, filtrando solo le directory che terminano con / e hanno formato versione (numeri e punti)
-      # Escludiamo file come latest.json
-      VERSIONS=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" | grep -E '.*/$' | grep -E '[0-9]+\.[0-9]+' | awk '{print $2}' | sed 's#/$##' | sort -t. -k1,1n -k2,2n -k3,3n)
-      VERSION_COUNT=$(echo "$VERSIONS" | wc -l)
+      if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
+        S3_BASE_PATH="${MODULE_NAME}/"
+      else
+        S3_BASE_PATH="develop/${MODULE_NAME}/"
+      fi
+
+    - echo "Pulizia S3 per $S3_BASE_PATH, mantenendo solo le ultime 5 versioni..."
+    - |
+      # Ottieni lista di tutte le versioni, filtrando solo le directory che terminano con /
+      echo "Elenco contenuti in s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}"
+      aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}"
       
-      echo "Trovate $VERSION_COUNT versioni valide (formato semver)"
+      # Filtra solo le directory di versione (terminano con /)
+      # e che contengono pattern numerico x.y (versione semantica)
+      VERSIONS=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}" | grep '/$' | grep -E '[0-9]+\.[0-9]+' | awk '{print $2}' | sed 's#/$##' | sort -t. -k1,1n -k2,2n -k3,3n)
+      
+      echo "Versioni trovate dopo il filtraggio:"
+      echo "$VERSIONS"
+      
+      VERSION_COUNT=$(echo "$VERSIONS" | grep -v '^$' | wc -l)
+      echo "Numero di versioni valide: $VERSION_COUNT"
       
       # Se ci sono più di 5 versioni, rimuovi le più vecchie
       if [[ $VERSION_COUNT -gt 5 ]]; then
         TO_DELETE=$(($VERSION_COUNT - 5))
         echo "Rimozione delle $TO_DELETE versioni più vecchie..."
       
-        # Ottieni le N versioni più vecchie e rimuovile
+        # Ottieni le N versioni più vecchie da rimuovere
         VERSIONS_TO_DELETE=$(echo "$VERSIONS" | head -n $TO_DELETE)
       
+        echo "Versioni da eliminare:"
+        echo "$VERSIONS_TO_DELETE"
+      
         for OLD_VERSION in $VERSIONS_TO_DELETE; do
-          echo "Rimozione versione $OLD_VERSION da S3..."
-          aws s3 rm "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${OLD_VERSION}/" --recursive
+          if [[ -n "$OLD_VERSION" ]]; then  # Verifica che non sia vuoto
+            echo "Rimozione versione $OLD_VERSION da S3..."
+            aws s3 rm "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}${OLD_VERSION}/" --recursive
+          fi
         done
       else
         echo "Ci sono $VERSION_COUNT versioni, non è necessaria alcuna pulizia (< 6)."
       fi
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main"  # Esegui solo su main per sicurezza
-      when: on_success
