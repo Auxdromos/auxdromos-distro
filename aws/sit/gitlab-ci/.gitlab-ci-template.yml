@@ -258,12 +258,20 @@ deploy_sit:
         echo "Module distro: downloading artifacts from S3 and uploading to EC2"
         mkdir -p /tmp/${MODULE_NAME}
         aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
-
+      
         # Create directories with sudo and set proper permissions
         ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts/ && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
-
+      
         # Continue with file transfers
         scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+        
+        # Extract the zip file on the EC2 instance
+        ssh ${EC2_USER}@${EC2_HOST} "
+          cd /app/${MODULE_NAME}/artifacts/ && 
+          unzip -o ${MODULE_NAME}-${VERSION}.zip && 
+          chmod -R +x /app/${MODULE_NAME}/artifacts/aws/sit/script/*.sh 2>/dev/null || true
+        "
+        
         echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
         scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
         echo "Skipping deploy script execution for module distro"
@@ -275,6 +283,17 @@ deploy_sit:
             cd /app/${MODULE_NAME} && /app/distro/artifacts/aws/sit/script/deploy_module.sh
           else
             echo 'No deploy script found'
+            echo 'Extracting distro zip file to get deployment scripts'
+            cd /app/distro/artifacts/ && 
+            unzip -o distro-*.zip && 
+            chmod -R +x /app/distro/artifacts/aws/sit/script/*.sh 2>/dev/null || true
+            
+            if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
+              echo 'Now found deploy_module.sh, executing it'
+              cd /app/${MODULE_NAME} && /app/distro/artifacts/aws/sit/script/deploy_module.sh
+            else
+              echo 'ERROR: Still no deploy script found after extracting ZIP'
+            fi
           fi
         "
       fi
