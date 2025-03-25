@@ -256,7 +256,7 @@ deploy_sit:
     - echo "Deploying module $MODULE_NAME"
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
-      if [ "$MODULE_NAME" = "auxdromos-distro" ]; then
+      if [ "$MODULE_NAME" = "distro" ]; then
         echo "Module distro: downloading artifacts from S3 and uploading to EC2"
         mkdir -p /tmp/${MODULE_NAME}
         aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
