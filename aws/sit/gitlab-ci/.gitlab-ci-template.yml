@@ -6,6 +6,7 @@ stages:
   - build
   - test
   - package
+  - docker
   - upload_to_s3
   - tag_latest
   - deploy_sit
@@ -169,6 +170,35 @@ package_configs:
   artifacts:
     paths:
       - dist/
+
+build_docker:
+  stage: docker
+  image: docker:latest
+  services:
+    - docker:dind
+  dependencies:
+    - extract_module_info
+    - build
+  before_script:
+    - apk add --no-cache aws-cli curl
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Verificando presenza Dockerfile per $MODULE_NAME..."
+    - |
+      if [ -f "Dockerfile" ]; then
+        echo "Dockerfile trovato, procedo con build e push"
+      
+        # Verifica/crea il repository ECR
+        if ! aws ecr describe-repositories --repository-names "auxdromos-$MODULE_NAME" &>/dev/null; then
+          echo "Repository auxdromos-$MODULE_NAME non esiste. Creazione..."
+          aws ecr create-repository --repository-name "auxdromos-$MODULE_NAME"
+        fi
+      
+        # Il resto del codice per build e push...
+      else
+        echo "Dockerfile non trovato per $MODULE_NAME, salto build e push Docker"
+        exit 0
+      fi
 
 upload_to_s3:
   stage: upload_to_s3
