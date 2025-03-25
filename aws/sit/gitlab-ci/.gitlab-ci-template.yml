@@ -64,26 +64,27 @@ check_version:
         exit 1
       fi
     
-      # Verifichiamo solo su ECR, non su S3
+      # Su main, controlliamo sia ECR che S3
       if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
         echo "Errore: La versione '$VERSION' è già presente su ECR."
+        exit 1
+      fi
+    
+      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
+      if [[ "$FOUND" -gt 0 ]]; then
+        echo "Errore: La versione '$VERSION' è già presente su S3."
         exit 1
       fi
     else
-      # Per tutti gli altri branch, controlla sia ECR che S3
-      if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
-        echo "Errore: La versione '$VERSION' è già presente su ECR."
-        exit 1
-      fi
-
+      # Per develop e altri branch, controlliamo solo S3
       FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" 2>/dev/null | wc -l || echo 0)
       echo "DEBUG FOUND = $FOUND"
 
       if [[ "$FOUND" -gt 0 ]]; then
-          echo "Versione già presente su S3. Interrompo la pipeline."
-          exit 1
+        echo "Versione già presente su S3. Interrompo la pipeline."
+        exit 1
       else
-          echo "Versione non presente su S3. Procedo..."
+        echo "Versione non presente su S3. Procedo..."
       fi
     fi
 
@@ -206,7 +207,7 @@ build_docker:
         echo "Dockerfile non trovato per $MODULE_NAME, salto build e push Docker"
       fi
   rules:
-    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "main"  # Esegui solo sul branch main
       when: on_success
 
 upload_to_s3:
@@ -353,7 +354,7 @@ deploy_sit:
     - when: never
 
 cleanup_s3:
-  stage: cleanup  # Potresti aggiungere questa come ultima fase
+  stage: cleanup
   image:
     name: amazon/aws-cli:latest
     entrypoint: [ "" ]
@@ -363,14 +364,17 @@ cleanup_s3:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Pulizia S3 per $MODULE_NAME, mantenendo solo le ultime 5 versioni..."
     - |
-      # Ottieni lista di tutte le versioni ordinate per data di modifica (più vecchia prima)
-      VERSIONS=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" | awk '{print $2}' | sed 's#/$##' | sort -t. -k1,1n -k2,2n -k3,3n)
+      # Ottieni lista di tutte le versioni, filtrando solo le directory che terminano con / e hanno formato versione (numeri e punti)
+      # Escludiamo file come latest.json
+      VERSIONS=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" | grep -E '.*/$' | grep -E '[0-9]+\.[0-9]+' | awk '{print $2}' | sed 's#/$##' | sort -t. -k1,1n -k2,2n -k3,3n)
       VERSION_COUNT=$(echo "$VERSIONS" | wc -l)
+      
+      echo "Trovate $VERSION_COUNT versioni valide (formato semver)"
       
       # Se ci sono più di 5 versioni, rimuovi le più vecchie
       if [[ $VERSION_COUNT -gt 5 ]]; then
         TO_DELETE=$(($VERSION_COUNT - 5))
-        echo "Trovate $VERSION_COUNT versioni, rimozione delle $TO_DELETE più vecchie..."
+        echo "Rimozione delle $TO_DELETE versioni più vecchie..."
       
         # Ottieni le N versioni più vecchie e rimuovile
         VERSIONS_TO_DELETE=$(echo "$VERSIONS" | head -n $TO_DELETE)
