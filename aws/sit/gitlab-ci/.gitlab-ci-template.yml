@@ -247,10 +247,12 @@ deploy_sit:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
 
-    # Creare un file temporaneo con i comandi di deployment
+    # Creare uno script di deployment
     - |
-      cat > deploy_commands.txt << 'EOF'
+      cat > deploy_script.sh << 'EOF'
       #!/bin/bash
+      set -e
+      
       # Assicuriamoci che le directory necessarie esistano
       mkdir -p /app/distro/artifacts/aws/sit/env
       mkdir -p /app/distro/artifacts/aws/sit/script
@@ -265,9 +267,17 @@ deploy_sit:
       # Rendi eseguibili gli script
       chmod +x ./artifacts/aws/sit/script/*.sh
       
+      # Verifica che deploy.env esista
+      if [ ! -f "/app/distro/artifacts/aws/sit/env/deploy.env" ]; then
+        echo "ERRORE: File deploy.env non trovato in /app/distro/artifacts/aws/sit/env"
+        echo "Il file deploy.env deve esistere prima di eseguire il deployment."
+        echo "Assicurati che il file sia presente nell'istanza o incluso negli artifact del modulo distro."
+        exit 1
+      fi
+      
       # Se NON è il modulo distro, esegui il deploy_module.sh
       if [ "$MODULE_NAME" != "distro" ] && [ "$MODULE_NAME" != "auxdromos-distro" ]; then
-        # Esegui il deployment del modulo
+        echo "Esecuzione di deploy_module.sh per il modulo $MODULE_NAME..."
         cd /app/distro/artifacts/aws/sit/script && \
         ./deploy_module.sh $MODULE_NAME && \
         echo "Deployment di $MODULE_NAME v$VERSION completato con successo"
@@ -276,18 +286,20 @@ deploy_sit:
       fi
       EOF
 
-    # Sostituire le variabili nel file
-    - sed -i "s/\$S3_BUCKET_NAME/${S3_BUCKET_NAME}/g" deploy_commands.txt
-    - sed -i "s/\$MODULE_NAME/${MODULE_NAME}/g" deploy_commands.txt
-    - sed -i "s/\$VERSION/${VERSION}/g" deploy_commands.txt
+    # Sostituire le variabili nello script
+    - sed -i "s/\$S3_BUCKET_NAME/${S3_BUCKET_NAME}/g" deploy_script.sh
+    - sed -i "s/\$MODULE_NAME/${MODULE_NAME}/g" deploy_script.sh
+    - sed -i "s/\$VERSION/${VERSION}/g" deploy_script.sh
 
-    # Leggere i comandi dal file ed eseguire SSM
+    # Carica lo script in S3 per essere accessibile dall'istanza EC2
+    - aws s3 cp deploy_script.sh s3://${S3_BUCKET_NAME}/scripts/deploy_${MODULE_NAME}_${VERSION}.sh
+
+    # Esegui SSM con un comando che scarica ed esegue lo script da S3
     - |
-      COMMANDS=$(cat deploy_commands.txt)
       aws ssm send-command \
         --document-name "AWS-RunShellScript" \
         --targets "Key=tag:Environment,Values=SIT" "Key=tag:Application,Values=Auxdromos" \
-        --parameters "commands=${COMMANDS}" \
+        --parameters commands='aws s3 cp s3://'${S3_BUCKET_NAME}'/scripts/deploy_'${MODULE_NAME}'_'${VERSION}'.sh /tmp/deploy_script.sh && chmod +x /tmp/deploy_script.sh && /tmp/deploy_script.sh' \
         --comment "Deploy di ${MODULE_NAME} v${VERSION} in SIT" \
         --output text
 
