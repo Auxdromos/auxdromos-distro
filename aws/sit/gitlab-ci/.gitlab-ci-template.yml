@@ -245,10 +245,8 @@ deploy_sit:
     - apk add --no-cache openssh-client bash aws-cli
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
-    # Write key to file with proper line breaks
     - echo "$EC2_PRIVATE_KEY" | sed 's/\\n/\n/g' > ~/.ssh/id_rsa
     - chmod 600 ~/.ssh/id_rsa
-    # Validate key format
     - ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null 2>&1 || (echo "Invalid private key"; exit 1)
     - echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
   script:
@@ -256,29 +254,29 @@ deploy_sit:
     - echo "Deploying module $MODULE_NAME"
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
-        if [ "$MODULE_NAME" = "distro" ]; then
-          echo "Module distro: downloading artifacts from S3 and uploading to EC2"
-          mkdir -p /tmp/${MODULE_NAME}
-          aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
-          
-          # Create directories with sudo and set proper permissions
-          ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts/ && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
-          
-          # Continue with file transfers
-          scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
-          echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
-          scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
-          echo "Skipping deploy script execution for module distro"
-        else
-          echo "Non-distro module: executing deployment script from distro module"
-          ssh ${EC2_USER}@${EC2_HOST} "
+      if [ "$MODULE_NAME" = "distro" ]; then
+        echo "Module distro: downloading artifacts from S3 and uploading to EC2"
+        mkdir -p /tmp/${MODULE_NAME}
+        aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
+
+        # Create directories with sudo and set proper permissions
+        ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts/ && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
+
+        # Continue with file transfers
+        scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+        echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
+        scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
+        echo "Skipping deploy script execution for module distro"
+      else
+        echo "Non-distro module: executing deployment script from distro module"
+        ssh ${EC2_USER}@${EC2_HOST} "
           if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
-          echo 'Found deploy_module.sh in distro artifacts'
-          cd /app/${MODULE_NAME} && /app/distro/artifacts/aws/sit/script/deploy_module.sh
+            echo 'Found deploy_module.sh in distro artifacts'
+            cd /app/${MODULE_NAME} && /app/distro/artifacts/aws/sit/script/deploy_module.sh
           else
-          echo 'No deploy script found'
+            echo 'No deploy script found'
           fi
-          "
+        "
       fi
     - echo "Deployment completed for $MODULE_NAME"
   only:
