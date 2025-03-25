@@ -264,33 +264,42 @@ deploy_sit:
       
         # Continue with file transfers
         scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
-        
-        # Extract the zip file on the EC2 instance
+      
+        # Extract the zip file on the EC2 instance and remove it after extraction
         ssh ${EC2_USER}@${EC2_HOST} "
-          cd /app/${MODULE_NAME}/artifacts/ && 
-          unzip -o ${MODULE_NAME}-${VERSION}.zip && 
-          chmod -R +x /app/${MODULE_NAME}/artifacts/aws/sit/script/*.sh 2>/dev/null || true
+          cd /app/${MODULE_NAME}/artifacts/ &&
+          unzip -o ${MODULE_NAME}-${VERSION}.zip &&
+          chmod -R +x /app/${MODULE_NAME}/artifacts/aws/sit/script/*.sh 2>/dev/null || true &&
+          rm -f ${MODULE_NAME}-${VERSION}.zip &&
+          echo 'ZIP file removed after extraction'
         "
-        
+      
         echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
         scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
         echo "Skipping deploy script execution for module distro"
       else
         echo "Non-distro module: executing deployment script from distro module"
         ssh ${EC2_USER}@${EC2_HOST} "
+          # Create module directory if it doesn't exist
+          sudo mkdir -p /app/${MODULE_NAME} && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}
+      
           if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
             echo 'Found deploy_module.sh in distro artifacts'
-            cd /app/${MODULE_NAME} && /app/distro/artifacts/aws/sit/script/deploy_module.sh
+            cd /app/distro/artifacts/ &&
+            ./aws/sit/script/deploy_module.sh ${MODULE_NAME}
           else
             echo 'No deploy script found'
             echo 'Extracting distro zip file to get deployment scripts'
-            cd /app/distro/artifacts/ && 
-            unzip -o distro-*.zip && 
-            chmod -R +x /app/distro/artifacts/aws/sit/script/*.sh 2>/dev/null || true
-            
+            cd /app/distro/artifacts/ &&
+            unzip -o distro-*.zip &&
+            chmod -R +x /app/distro/artifacts/aws/sit/script/*.sh 2>/dev/null || true &&
+            rm -f distro-*.zip &&
+            echo 'Distro ZIP file removed after extraction'
+      
             if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
               echo 'Now found deploy_module.sh, executing it'
-              cd /app/${MODULE_NAME} && /app/distro/artifacts/aws/sit/script/deploy_module.sh
+              cd /app/distro/artifacts/ &&
+              ./aws/sit/script/deploy_module.sh ${MODULE_NAME}
             else
               echo 'ERROR: Still no deploy script found after extracting ZIP'
             fi
