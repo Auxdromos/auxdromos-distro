@@ -9,6 +9,7 @@ stages:
   - docker
   - upload_to_s3
   - tag_latest
+  - cleanup
   - deploy_sit
 
 extract_module_info:
@@ -186,19 +187,27 @@ build_docker:
     - echo "Verificando presenza Dockerfile per $MODULE_NAME..."
     - |
       if [ -f "Dockerfile" ]; then
-        echo "Dockerfile trovato, procedo con build e push"
+        echo "Dockerfile trovato per $MODULE_NAME, procedo con build e push"
       
-        # Verifica/crea il repository ECR
-        if ! aws ecr describe-repositories --repository-names "auxdromos-$MODULE_NAME" &>/dev/null; then
-          echo "Repository auxdromos-$MODULE_NAME non esiste. Creazione..."
-          aws ecr create-repository --repository-name "auxdromos-$MODULE_NAME"
-        fi
+        # Autenticazione con AWS ECR
+        aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
       
-        # Il resto del codice per build e push...
+        # Costruzione dell'immagine Docker
+        docker build -t auxdromos-$MODULE_NAME:$VERSION .
+      
+        # Tagging dell'immagine
+        docker tag auxdromos-$MODULE_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
+      
+        # Push dell'immagine su ECR
+        docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
+      
+        echo "Immagine Docker caricata con successo: auxdromos-$MODULE_NAME:$VERSION"
       else
         echo "Dockerfile non trovato per $MODULE_NAME, salto build e push Docker"
-        exit 0
       fi
+  rules:
+    - if: $CI_COMMIT_BRANCH
+      when: on_success
 
 upload_to_s3:
   stage: upload_to_s3
@@ -343,3 +352,36 @@ deploy_sit:
       when: manual
     - when: never
 
+cleanup_s3:
+  stage: cleanup  # Potresti aggiungere questa come ultima fase
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [ "" ]
+  dependencies:
+    - extract_module_info
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Pulizia S3 per $MODULE_NAME, mantenendo solo le ultime 5 versioni..."
+    - |
+      # Ottieni lista di tutte le versioni ordinate per data di modifica (più vecchia prima)
+      VERSIONS=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/" | awk '{print $2}' | sed 's#/$##' | sort -t. -k1,1n -k2,2n -k3,3n)
+      VERSION_COUNT=$(echo "$VERSIONS" | wc -l)
+      
+      # Se ci sono più di 5 versioni, rimuovi le più vecchie
+      if [[ $VERSION_COUNT -gt 5 ]]; then
+        TO_DELETE=$(($VERSION_COUNT - 5))
+        echo "Trovate $VERSION_COUNT versioni, rimozione delle $TO_DELETE più vecchie..."
+      
+        # Ottieni le N versioni più vecchie e rimuovile
+        VERSIONS_TO_DELETE=$(echo "$VERSIONS" | head -n $TO_DELETE)
+      
+        for OLD_VERSION in $VERSIONS_TO_DELETE; do
+          echo "Rimozione versione $OLD_VERSION da S3..."
+          aws s3 rm "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${OLD_VERSION}/" --recursive
+        done
+      else
+        echo "Ci sono $VERSION_COUNT versioni, non è necessaria alcuna pulizia (< 6)."
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"  # Esegui solo su main per sicurezza
+      when: on_success
