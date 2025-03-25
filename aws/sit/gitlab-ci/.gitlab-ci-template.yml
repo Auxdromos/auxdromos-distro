@@ -247,35 +247,47 @@ deploy_sit:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
 
-    # Esegui comandi AWS SSM per avviare il deployment
+    # Creare un file temporaneo con i comandi di deployment
     - |
+      cat > deploy_commands.txt << 'EOF'
+      #!/bin/bash
+      # Assicuriamoci che le directory necessarie esistano
+      mkdir -p /app/distro/artifacts/aws/sit/env
+      mkdir -p /app/distro/artifacts/aws/sit/script
+      
+      # Scarica gli artifact dalla versione corrente in S3 nella directory artifacts
+      cd /app/distro && \
+      aws s3 cp s3://$S3_BUCKET_NAME/$MODULE_NAME/$VERSION/ ./artifacts/ --recursive
+      
+      # Aggiorna il file di versione corrente
+      echo "$VERSION" > current-version.txt
+      
+      # Rendi eseguibili gli script
+      chmod +x ./artifacts/aws/sit/script/*.sh
+      
+      # Se NON è il modulo distro, esegui il deploy_module.sh
+      if [ "$MODULE_NAME" != "distro" ] && [ "$MODULE_NAME" != "auxdromos-distro" ]; then
+        # Esegui il deployment del modulo
+        cd /app/distro/artifacts/aws/sit/script && \
+        ./deploy_module.sh $MODULE_NAME && \
+        echo "Deployment di $MODULE_NAME v$VERSION completato con successo"
+      else
+        echo "Modulo distro aggiornato alla versione $VERSION. Gli script sono pronti per essere eseguiti manualmente o dai moduli specifici."
+      fi
+      EOF
+
+    # Sostituire le variabili nel file
+    - sed -i "s/\$S3_BUCKET_NAME/${S3_BUCKET_NAME}/g" deploy_commands.txt
+    - sed -i "s/\$MODULE_NAME/${MODULE_NAME}/g" deploy_commands.txt
+    - sed -i "s/\$VERSION/${VERSION}/g" deploy_commands.txt
+
+    # Leggere i comandi dal file ed eseguire SSM
+    - |
+      COMMANDS=$(cat deploy_commands.txt)
       aws ssm send-command \
         --document-name "AWS-RunShellScript" \
         --targets "Key=tag:Environment,Values=SIT" "Key=tag:Application,Values=Auxdromos" \
-        --parameters commands="
-          # Assicuriamoci che le directory necessarie esistano
-          mkdir -p /app/distro/aws/sit/env
-          mkdir -p /app/distro/aws/sit/script
-      
-          # Scarica gli artifact dalla versione corrente in S3
-          cd /app/distro && \
-          aws s3 cp s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/ . --recursive && \
-      
-          # Aggiorna il file di versione corrente
-          echo \"${VERSION}\" > current-version.txt && \
-      
-          # Rendi eseguibili gli script
-          chmod +x ./script/*.sh
-      
-          # Se NON è il modulo distro, esegui il deploy_module.sh
-          if [ \"${MODULE_NAME}\" != \"distro\" ] && [ \"${MODULE_NAME}\" != \"auxdromos-distro\" ]; then
-            # Esegui il deployment del modulo
-            ./script/deploy_module.sh ${MODULE_NAME} && \
-            echo \"Deployment di ${MODULE_NAME} v${VERSION} completato con successo\"
-          else
-            echo \"Modulo distro aggiornato alla versione ${VERSION}. Gli script sono pronti per essere eseguiti manualmente o dai moduli specifici.\"
-          fi
-        " \
+        --parameters "commands=${COMMANDS}" \
         --comment "Deploy di ${MODULE_NAME} v${VERSION} in SIT" \
         --output text
 
