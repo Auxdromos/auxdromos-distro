@@ -296,84 +296,93 @@ deploy_sit:
   dependencies:
     - extract_module_info
     - upload_to_s3
-  script:
-    - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
-    - |
-      cat > deploy_script.sh << 'EOF'
-      #!/bin/bash
-      set -e
-      
-      # Assicuriamoci che le directory necessarie esistano
-      mkdir -p /app/distro/artifacts/aws/sit/env
-      mkdir -p /app/distro/artifacts/aws/sit/script
-      
-      # Scarica gli artifact dalla versione corrente in S3 nella directory artifacts
-      cd /app/distro && \
-      aws s3 cp s3://$S3_BUCKET_NAME/$MODULE_NAME/$VERSION/ ./artifacts/ --recursive
-      
-      # Aggiorna il file di versione corrente
-      echo "$VERSION" > current-version.txt
-      
-      # Rendi eseguibili gli script
-      chmod +x ./artifacts/aws/sit/script/*.sh
-      
-      # Verifica che deploy.env esista
-      if [ ! -f "/app/distro/artifacts/aws/sit/env/deploy.env" ]; then
-        echo "ERRORE: File deploy.env non trovato in /app/distro/artifacts/aws/sit/env"
-        echo "Il file deploy.env deve esistere prima di eseguire il deployment."
-        echo "Assicurati che il file sia presente nell'istanza o incluso negli artifact del modulo distro."
-        exit 1
+  script: |
+    if [ -f module_info.env ]; then . module_info.env; fi
+    echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
+
+    # Creare uno script di deployment
+    cat > deploy_script.sh << 'EOF'
+    #!/bin/bash
+    set -e
+    
+    # Assicuriamoci che le directory necessarie esistano
+    mkdir -p /app/distro/artifacts/aws/sit/env
+    mkdir -p /app/distro/artifacts/aws/sit/script
+    
+    # Scarica gli artifact dalla versione corrente in S3 nella directory artifacts
+    cd /app/distro && \
+    aws s3 cp s3://$S3_BUCKET_NAME/$MODULE_NAME/$VERSION/ ./artifacts/ --recursive
+    
+    # Aggiorna il file di versione corrente
+    echo "$VERSION" > current-version.txt
+    
+    # Rendi eseguibili gli script
+    chmod +x ./artifacts/aws/sit/script/*.sh
+    
+    # Verifica che deploy.env esista
+    if [ ! -f "/app/distro/artifacts/aws/sit/env/deploy.env" ]; then
+      echo "ERRORE: File deploy.env non trovato in /app/distro/artifacts/aws/sit/env"
+      echo "Il file deploy.env deve esistere prima di eseguire il deployment."
+      echo "Assicurati che il file sia presente nell'istanza o incluso negli artifact del modulo distro."
+      exit 1
+    fi
+    
+    # Se NON è il modulo distro, esegui il deploy_module.sh
+    if [ "$MODULE_NAME" != "distro" ] && [ "$MODULE_NAME" != "auxdromos-distro" ]; then
+      echo "Esecuzione di deploy_module.sh per il modulo $MODULE_NAME..."
+      cd /app/distro/artifacts/aws/sit/script && \
+      ./deploy_module.sh $MODULE_NAME && \
+      echo "Deployment di $MODULE_NAME v$VERSION completato con successo"
+    else
+      echo "Modulo distro aggiornato alla versione $VERSION. Gli script sono pronti per essere eseguiti manualmente o dai moduli specifici."
+    fi
+    EOF
+
+    # Sostituire le variabili nello script
+    sed -i "s/\$S3_BUCKET_NAME/${S3_BUCKET_NAME}/g" deploy_script.sh
+    sed -i "s/\$MODULE_NAME/${MODULE_NAME}/g" deploy_script.sh
+    sed -i "s/\$VERSION/${VERSION}/g" deploy_script.sh
+
+    # Carica lo script in S3 per essere accessibile dall'istanza EC2
+    aws s3 cp deploy_script.sh s3://${S3_BUCKET_NAME}/scripts/deploy_${MODULE_NAME}_${VERSION}.sh
+
+    # Avvia il deployment
+    COMMAND_ID=$(aws ssm send-command --document-name "AWS-RunShellScript" --instance-ids "$INSTANCE_ID" --parameters commands="$DEPLOY_SCRIPT" --output text --query "Command.CommandId")
+    echo "Deployment avviato con CommandID: $COMMAND_ID"
+
+    # Attendi che il comando sia completato e mostra i log in tempo reale
+    echo "Monitoraggio dell'esecuzione del comando..."
+    STATUS="Pending"
+    
+    while [[ "$STATUS" == "Pending" || "$STATUS" == "InProgress" ]]; do
+      sleep 5
+      CMD_OUTPUT=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --output json)
+      STATUS=$(echo "$CMD_OUTPUT" | grep -o '"Status": "[^"]*"' | cut -d'"' -f4)
+      echo "Stato corrente: $STATUS"
+    
+      # Mostra log dell'esecuzione se disponibili
+      if [[ $(echo "$CMD_OUTPUT" | grep -o '"StandardOutputContent": "[^"]*"' | wc -l) -gt 0 ]]; then
+        echo "--- LOG OUTPUT ---"
+        echo "$CMD_OUTPUT" | grep -o '"StandardOutputContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g'
+        echo "-----------------"
       fi
-      
-      # Se NON è il modulo distro, esegui il deploy_module.sh
-      if [ "$MODULE_NAME" != "distro" ] && [ "$MODULE_NAME" != "auxdromos-distro" ]; then
-        echo "Esecuzione di deploy_module.sh per il modulo $MODULE_NAME..."
-        cd /app/distro/artifacts/aws/sit/script && \
-        ./deploy_module.sh $MODULE_NAME && \
-        echo "Deployment di $MODULE_NAME v$VERSION completato con successo"
-      else
-        echo "Modulo distro aggiornato alla versione $VERSION. Gli script sono pronti per essere eseguiti manualmente o dai moduli specifici."
+    
+      # Mostra anche gli errori se ce ne sono
+      if [[ $(echo "$CMD_OUTPUT" | grep -o '"StandardErrorContent": "[^"]*"' | wc -l) -gt 0 ]]; then
+        echo "--- ERROR LOG ---"
+        echo "$CMD_OUTPUT" | grep -o '"StandardErrorContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g'
+        echo "----------------"
       fi
-      EOF
-    - sed -i "s/\$S3_BUCKET_NAME/${S3_BUCKET_NAME}/g" deploy_script.sh
-    - sed -i "s/\$MODULE_NAME/${MODULE_NAME}/g" deploy_script.sh
-    - sed -i "s/\$VERSION/${VERSION}/g" deploy_script.sh
-    - aws s3 cp deploy_script.sh s3://${S3_BUCKET_NAME}/scripts/deploy_${MODULE_NAME}_${VERSION}.sh
-    - COMMAND_ID=$(aws ssm send-command --document-name "AWS-RunShellScript" --instance-ids "$INSTANCE_ID" --parameters commands="$DEPLOY_SCRIPT" --output text --query "Command.CommandId")
-    - echo "Deployment avviato con CommandID: $COMMAND_ID"
-    - |
-      echo "Monitoraggio dell'esecuzione del comando..."
-      STATUS="Pending"
-      
-      while [[ "$STATUS" == "Pending" || "$STATUS" == "InProgress" ]]; do
-        sleep 5
-        CMD_OUTPUT=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --output json)
-        STATUS=$(echo "$CMD_OUTPUT" | grep -o '"Status": "[^"]*"' | cut -d'"' -f4)
-        echo "Stato corrente: $STATUS"
-      
-        # Mostra log dell'esecuzione se disponibili
-        if [[ $(echo "$CMD_OUTPUT" | grep -o '"StandardOutputContent": "[^"]*"' | wc -l) -gt 0 ]]; then
-          echo "--- LOG OUTPUT ---"
-          echo "$CMD_OUTPUT" | grep -o '"StandardOutputContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g'
-          echo "-----------------"
-        fi
-      
-        # Mostra anche gli errori se ce ne sono
-        if [[ $(echo "$CMD_OUTPUT" | grep -o '"StandardErrorContent": "[^"]*"' | wc -l) -gt 0 ]]; then
-          echo "--- ERROR LOG ---"
-          echo "$CMD_OUTPUT" | grep -o '"StandardErrorContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g'
-          echo "----------------"
-        fi
-      done
-      
-      if [[ "$STATUS" == "Success" ]]; then
-        echo "✅ Deployment completato con successo!"
-        exit 0
-      else
-        echo "❌ Deployment fallito con stato: $STATUS"
-        exit 1
-      fi
+    done
+    
+    # Verifica lo stato finale
+    if [[ "$STATUS" == "Success" ]]; then
+      echo "✅ Deployment completato con successo!"
+      exit 0
+    else
+      echo "❌ Deployment fallito con stato: $STATUS"
+      exit 1
+    fi
   environment:
     name: sit
     url: https://sit.auxdromos.com
