@@ -299,8 +299,6 @@ deploy_sit:
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
-
-    # Creare uno script di deployment
     - |
       cat > deploy_script.sh << 'EOF'
       #!/bin/bash
@@ -338,20 +336,12 @@ deploy_sit:
         echo "Modulo distro aggiornato alla versione $VERSION. Gli script sono pronti per essere eseguiti manualmente o dai moduli specifici."
       fi
       EOF
-
-    # Sostituire le variabili nello script
     - sed -i "s/\$S3_BUCKET_NAME/${S3_BUCKET_NAME}/g" deploy_script.sh
     - sed -i "s/\$MODULE_NAME/${MODULE_NAME}/g" deploy_script.sh
     - sed -i "s/\$VERSION/${VERSION}/g" deploy_script.sh
-
-    # Carica lo script in S3 per essere accessibile dall'istanza EC2
     - aws s3 cp deploy_script.sh s3://${S3_BUCKET_NAME}/scripts/deploy_${MODULE_NAME}_${VERSION}.sh
-
-    # Avvia il deployment
     - COMMAND_ID=$(aws ssm send-command --document-name "AWS-RunShellScript" --instance-ids "$INSTANCE_ID" --parameters commands="$DEPLOY_SCRIPT" --output text --query "Command.CommandId")
     - echo "Deployment avviato con CommandID: $COMMAND_ID"
-
-    # Attendi che il comando sia completato e mostra i log in tempo reale
     - |
       echo "Monitoraggio dell'esecuzione del comando..."
       STATUS="Pending"
@@ -377,7 +367,6 @@ deploy_sit:
         fi
       done
       
-      # Verifica lo stato finale
       if [[ "$STATUS" == "Success" ]]; then
         echo "✅ Deployment completato con successo!"
         exit 0
