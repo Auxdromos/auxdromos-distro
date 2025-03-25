@@ -42,7 +42,7 @@ check_version:
     - extract_module_info
   image:
     name: amazon/aws-cli:latest
-    entrypoint: [""]
+    entrypoint: [ "" ]
   script: |
     set -e
     set -o pipefail
@@ -174,7 +174,7 @@ upload_to_s3:
   stage: upload_to_s3
   image:
     name: amazon/aws-cli:latest
-    entrypoint: [""]
+    entrypoint: [ "" ]
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Caricamento artefatti su S3 per $MODULE_NAME versione $VERSION"
@@ -207,7 +207,7 @@ tag_latest:
   stage: tag_latest
   image:
     name: amazon/aws-cli:latest
-    entrypoint: [""]
+    entrypoint: [ "" ]
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Aggiornando tag 'latest' per $MODULE_NAME"
@@ -255,28 +255,36 @@ deploy_sit:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
       if [ "$MODULE_NAME" = "distro" ]; then
-        echo "Module distro: downloading artifacts from S3 and uploading to EC2"
+        echo "Module distro: downloading artifacts from S3 and uploading to EC2 (sovrascrivo la vecchia versione con la nuova come 'last')"
+      
+        # Scarico gli artifact nella directory temporanea locale
         mkdir -p /tmp/${MODULE_NAME}
         aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
-      
-        # Create directories with sudo and set proper permissions
+    
+        # Rimuovo i vecchi artifact presenti sulla macchina EC2
+        ssh ${EC2_USER}@${EC2_HOST} "sudo rm -rf /app/${MODULE_NAME}/artifacts/*"
+    
+        # Creo la directory necessaria con i permessi corretti sulla EC2
         ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts/ && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
-      
-        # Continue with file transfers
+    
+        # Copio i nuovi file dalla directory temporanea della macchina locale alla macchina EC2
         scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
-      
-        # Extract the zip file on the EC2 instance and remove it after extraction
+    
+        # Estrazione del file ZIP e gestione del tag "last"
         ssh ${EC2_USER}@${EC2_HOST} "
-          cd /app/${MODULE_NAME}/artifacts/ &&
-          unzip -o ${MODULE_NAME}-${VERSION}.zip &&
-          chmod -R +x /app/${MODULE_NAME}/artifacts/aws/sit/script/*.sh 2>/dev/null || true &&
-          rm -f ${MODULE_NAME}-${VERSION}.zip &&
-          echo 'ZIP file removed after extraction'
+        cd /app/${MODULE_NAME}/artifacts/ &&
+        unzip -o ${MODULE_NAME}-${VERSION}.zip &&
+        # Rinomino il file ZIP con il tag last oppure lo rimuovo se preferisci
+        mv ${MODULE_NAME}-${VERSION}.zip ${MODULE_NAME}-last.zip &&
+        chmod -R +x /app/${MODULE_NAME}/artifacts/aws/sit/script/*.sh 2>/dev/null || true &&
+        echo 'ZIP file rinominato in ${MODULE_NAME}-last.zip'
         "
-      
+            
+        # Aggiorno il file che indica la versione corrente sulla macchina EC2
         echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
         scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
-        echo "Skipping deploy script execution for module distro"
+      
+        echo "Deploy per il modulo distro completato"
       else
         echo "Non-distro module: executing deployment script from distro module"
         ssh ${EC2_USER}@${EC2_HOST} "
