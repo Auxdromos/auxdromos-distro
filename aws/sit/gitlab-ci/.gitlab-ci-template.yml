@@ -237,84 +237,55 @@ tag_latest:
 
 deploy_sit:
   stage: deploy_sit
-  image: alpine:latest
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
   dependencies:
     - extract_module_info
-  timeout: 15m
-  before_script:
-    - apk add --no-cache openssh-client bash aws-cli
-    - mkdir -p ~/.ssh
-    - chmod 700 ~/.ssh
-    - echo "$EC2_PRIVATE_KEY" | sed 's/\\n/\n/g' > ~/.ssh/id_rsa
-    - chmod 600 ~/.ssh/id_rsa
-    - ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null 2>&1 || (echo "Invalid private key"; exit 1)
-    - echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+    - upload_to_s3
   script:
-    - set -e
-    - echo "Deploying module $MODULE_NAME"
     - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
+
+    # Esegui comandi AWS SSM per avviare il deployment
     - |
-      if [ "$MODULE_NAME" = "distro" ]; then
-        echo "Module distro: downloading artifacts from S3 and uploading to EC2 (sovrascrivo la vecchia versione con la nuova come 'last')"
+      aws ssm send-command \
+        --document-name "AWS-RunShellScript" \
+        --targets "Key=tag:Environment,Values=SIT" "Key=tag:Application,Values=Auxdromos" \
+        --parameters commands="
+          # Assicuriamoci che le directory necessarie esistano
+          mkdir -p /app/distro/aws/sit/env
+          mkdir -p /app/distro/aws/sit/script
       
-        # Scarico gli artifact nella directory temporanea locale
-        mkdir -p /tmp/${MODULE_NAME}
-        aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
-    
-        # Rimuovo i vecchi artifact presenti sulla macchina EC2
-        ssh ${EC2_USER}@${EC2_HOST} "sudo rm -rf /app/${MODULE_NAME}/artifacts/*"
-    
-        # Creo la directory necessaria con i permessi corretti sulla EC2
-        ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts/ && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
-    
-        # Copio i nuovi file dalla directory temporanea della macchina locale alla macchina EC2
-        scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
-    
-        # Estrazione del file ZIP e gestione del tag "last"
-        ssh ${EC2_USER}@${EC2_HOST} "
-        cd /app/${MODULE_NAME}/artifacts/ &&
-        unzip -o ${MODULE_NAME}-${VERSION}.zip &&
-        # Rinomino il file ZIP con il tag last oppure lo rimuovo se preferisci
-        mv ${MODULE_NAME}-${VERSION}.zip ${MODULE_NAME}-last.zip &&
-        chmod -R +x /app/${MODULE_NAME}/artifacts/aws/sit/script/*.sh 2>/dev/null || true &&
-        echo 'ZIP file rinominato in ${MODULE_NAME}-last.zip'
-        "
-            
-        # Aggiorno il file che indica la versione corrente sulla macchina EC2
-        echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
-        scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
+          # Scarica gli artifact dalla versione corrente in S3
+          cd /app/distro && \
+          aws s3 cp s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/ . --recursive && \
       
-        echo "Deploy per il modulo distro completato"
-      else
-        echo "Non-distro module: executing deployment script from distro module"
-        ssh ${EC2_USER}@${EC2_HOST} "
-          # Create module directory if it doesn't exist
-          sudo mkdir -p /app/${MODULE_NAME} && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}
+          # Aggiorna il file di versione corrente
+          echo \"${VERSION}\" > current-version.txt && \
       
-          if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
-            echo 'Found deploy_module.sh in distro artifacts'
-            cd /app/distro/artifacts/ &&
-            ./aws/sit/script/deploy_module.sh ${MODULE_NAME}
+          # Rendi eseguibili gli script
+          chmod +x ./script/*.sh
+      
+          # Se NON è il modulo distro, esegui il deploy_module.sh
+          if [ \"${MODULE_NAME}\" != \"distro\" ] && [ \"${MODULE_NAME}\" != \"auxdromos-distro\" ]; then
+            # Esegui il deployment del modulo
+            ./script/deploy_module.sh ${MODULE_NAME} && \
+            echo \"Deployment di ${MODULE_NAME} v${VERSION} completato con successo\"
           else
-            echo 'No deploy script found'
-            echo 'Extracting distro zip file to get deployment scripts'
-            cd /app/distro/artifacts/ &&
-            unzip -o distro-*.zip &&
-            chmod -R +x /app/distro/artifacts/aws/sit/script/*.sh 2>/dev/null || true &&
-            rm -f distro-*.zip &&
-            echo 'Distro ZIP file removed after extraction'
-      
-            if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
-              echo 'Now found deploy_module.sh, executing it'
-              cd /app/distro/artifacts/ &&
-              ./aws/sit/script/deploy_module.sh ${MODULE_NAME}
-            else
-              echo 'ERROR: Still no deploy script found after extracting ZIP'
-            fi
+            echo \"Modulo distro aggiornato alla versione ${VERSION}. Gli script sono pronti per essere eseguiti manualmente o dai moduli specifici.\"
           fi
-        "
-      fi
-    - echo "Deployment completed for $MODULE_NAME"
-  only:
-    - main
+        " \
+        --comment "Deploy di ${MODULE_NAME} v${VERSION} in SIT" \
+        --output text
+
+    # Attendi il completamento del deploy
+    - echo "Deployment avviato su SIT. Verifica lo stato del deployment nella console AWS Systems Manager."
+  environment:
+    name: sit
+    url: https://sit.auxdromos.com
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^release\/.*$/
+      when: manual
+    - when: never
 
