@@ -13,11 +13,12 @@ deploy_distro:
   image: amazon/aws-cli:latest
   when: on_success  # Esecuzione automatica se gli stage precedenti hanno avuto successo
   script:
+    # Carica le variabili dal file module_info.env
     - if [ -f module_info.env ]; then . module_info.env; fi
     # Controlla che il modulo sia "distro"
     - if [ "$MODULE_NAME" != "distro" ]; then echo "Il modulo non è distro, salto deploy_distro."; exit 0; fi
     # Controlla che il branch sia "distro" o "develop"
-    - if [[ "$CI_COMMIT_REF_NAME" != "distro" && "$CI_COMMIT_REF_NAME" != "develop" ]]; then echo "Branch $CI_COMMIT_REF_NAME non abilitato per deploy del modulo distro, salto deploy_distro."; exit 0; fi
+    - if [[ "$CI_COMMIT_REF_NAME" != "distro" && "$CI_COMMIT_REF_NAME" != "develop" ]]; then echo "Branch $CI_COMMIT_REF_NAME non abilitato per il deploy del modulo distro, salto deploy_distro."; exit 0; fi
     - echo "Deployment del modulo *distro* versione $VERSION in ambiente SIT (non eseguito sotto docker)..."
     - echo "Controllo che esista la cartella aws/sit/script:"
     - ls -la aws/sit/script
@@ -26,21 +27,22 @@ deploy_distro:
     - chmod +x deploy_module.sh
     # Carica lo script in S3 nella cartella della versione, in modo che rimanga disponibile fino a un nuovo deploy
     - aws s3 cp deploy_module.sh "s3://${S3_BUCKET_NAME}/distro/${VERSION}/deploy_module.sh"
-    # Ottieni gli ID delle istanze target tramite tag
-    - |
+    # Ottieni gli ID delle istanze target tramite tag (assicurati che le istanze abbiano i tag corretti)
+    - >
       INSTANCE_IDS=$(aws ec2 describe-instances \
          --filters "Name=tag:Environment,Values=SIT" "Name=tag:Application,Values=auxdromos" "Name=instance-state-name,Values=running" \
-         --query "Reservations[*].Instances[*].InstanceId" \
-         --output text)
-      if [ -z "$INSTANCE_IDS" ]; then
-        echo "ERRORE: Nessuna istanza EC2 trovata con i tag specificati!"
-        exit 1
-      fi
+         --query "Reservations[*].Instances[*].InstanceId" --output text);
+      if [ -z "$INSTANCE_IDS" ]; then echo "ERRORE: Nessuna istanza EC2 trovata con i tag specificati!"; exit 1; fi;
       echo "Istanze target trovate: $INSTANCE_IDS"
-    # Copia lo script sulle istanze via SSM e lo esegue
-    - aws ssm send-command \
-      --document-name "AWS-RunShellScript" \
-      --targets "Key=instanceids,Values=$INSTANCE_IDS" \
-      --parameters '{"commands":["aws s3 cp s3://'${S3_BUCKET_NAME}'/distro/'${VERSION}'/deploy_module.sh /tmp/deploy_module.sh","chmod +x /tmp/deploy_module.sh","/tmp/deploy_module.sh '${MODULE_NAME}' '${VERSION}'"]}' \
-      --output text
+    # Eseguiamo lo script (ora presente su S3) sulle istanze via AWS SSM
+    - |
+      aws ssm send-command \
+        --document-name "AWS-RunShellScript" \
+        --targets "Key=instanceids,Values=$INSTANCE_IDS" \
+        --parameters commands=[
+          "aws s3 cp s3://${S3_BUCKET_NAME}/distro/${VERSION}/deploy_module.sh /tmp/deploy_module.sh",
+          "chmod +x /tmp/deploy_module.sh",
+          "/tmp/deploy_module.sh ${MODULE_NAME} ${VERSION}"
+        ] \
+        --output text
     - echo "Il file deploy_module.sh è ora disponibile sulla istanza."
