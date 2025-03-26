@@ -284,6 +284,8 @@ deploy_sit:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
 
+    - echo "Controllo che esista la cartella aws/sit/script:"
+    - ls -la aws/sit/script
     # Utilizziamo lo script di deploy del repo, invece di generarne uno
     - echo "Utilizzo script deploy_module.sh dal repository..."
     - cp aws/sit/script/deploy_module.sh deploy_module.sh
