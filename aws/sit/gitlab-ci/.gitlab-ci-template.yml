@@ -290,7 +290,7 @@ deploy_sit:
     - chmod +x deploy_module.sh
 
     # Carichiamo lo script su S3 per poi scaricarlo via SSM all'interno dell'istanza
-    - aws s3 cp deploy_module.sh "s3://${S3_BUCKET_NAME}/scripts/deploy_${MODULE_NAME}_${VERSION}.sh"
+    - aws s3 cp deploy_module.sh "s3://${S3_BUCKET_NAME}/distro/${VERSION}/deploy_module.sh"
 
     # Otteniamo gli ID delle istanze di destinazione (SIT) tramite tag
     - |
@@ -312,7 +312,7 @@ deploy_sit:
         --document-name "AWS-RunShellScript" \
         --targets "Key=instanceids,Values=$INSTANCE_IDS" \
         --parameters commands=[
-          "aws s3 cp s3://${S3_BUCKET_NAME}/scripts/deploy_${MODULE_NAME}_${VERSION}.sh /tmp/deploy_module.sh",
+          "aws s3 cp s3://${S3_BUCKET_NAME}/distro/${VERSION}/deploy_module.sh /tmp/deploy_module.sh",
           "chmod +x /tmp/deploy_module.sh",
           "/tmp/deploy_module.sh ${MODULE_NAME} ${VERSION}"
         ] \
