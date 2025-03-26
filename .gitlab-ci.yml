@@ -2,6 +2,12 @@ include:
   - project: 'auxdromos/auxdromos-distro'
     file: 'aws/sit/gitlab-ci/.gitlab-ci-template.yml'
 
+# Override del job deploy_sit per disabilitarlo sul branch "distro"
+deploy_sit:
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "distro"'
+      when: never
+
 deploy_distro:
   stage: deploy_sit
   image: amazon/aws-cli:latest
