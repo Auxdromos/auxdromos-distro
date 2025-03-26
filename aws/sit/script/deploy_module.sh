@@ -98,7 +98,7 @@ check_image_exists() {
   if aws ecr create-repository --repository-name "$REPOSITORY" &>/dev/null; then
     echo "Repository $REPOSITORY creato con successo"
     export ECR_REPOSITORY_NAME="$REPOSITORY"
-    return 0
+    return 1
   else
     echo "Errore nella creazione del repository $REPOSITORY"
     return 1
