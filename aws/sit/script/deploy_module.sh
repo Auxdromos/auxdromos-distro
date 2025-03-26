@@ -27,8 +27,8 @@ else
 fi
 
 # Impostazione dei valori di default per i moduli se non presenti in deploy.env
-MODULES=${MODULES:-"rdbms discovery config-server gateway backend idp"}
-MODULE_ORDER=${MODULE_ORDER:-"discovery config-server gateway rdbms backend idp"}
+MODULES=${MODULES:-"rdbms config gateway backend idp"}
+MODULE_ORDER=${MODULE_ORDER:-"config rdbms idp backend gateway"}
 
 # Recupera il nome del modulo passato come primo argomento
 MODULO=$1
@@ -53,56 +53,58 @@ check_image_exists() {
   local REPOSITORY="auxdromos-${MODULE_NAME}"
   local REPOSITORY_NO_PREFIX="${MODULE_NAME}"
 
-  echo "Verifico esistenza dell'immagine ${MODULE_NAME} su ECR..."
+  echo "Ricerca dell'ultima immagine per ${MODULE_NAME} su ECR..."
 
   # Prima prova con il prefisso auxdromos (come fa la pipeline)
   if aws ecr describe-repositories --repository-names "$REPOSITORY" &>/dev/null; then
-    # Verifica se ci sono immagini nel repository
-    local IMAGE_COUNT
-    IMAGE_COUNT=$(aws ecr describe-images --repository-name "$REPOSITORY" --query "length(imageDetails)" --output text)
+    # Ottieni l'ultimo tag dall'output di describe-images (ordinato per data di push)
+    LATEST_TAG=$(aws ecr describe-images --repository-name "$REPOSITORY" --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
 
-    if [ "$IMAGE_COUNT" -eq "0" ]; then
-      echo "Repository $REPOSITORY esiste ma non contiene immagini"
-      export ECR_REPOSITORY_NAME="$REPOSITORY"
-      return 1
+    if [[ -z "$LATEST_TAG" ]]; then
+        echo "Nessun tag trovato per $REPOSITORY. Impossibile determinare l'ultima versione"
+        export ECR_REPOSITORY_NAME="$REPOSITORY"
+        return 1
     fi
 
-    echo "Repository $REPOSITORY trovato con $IMAGE_COUNT immagini"
+    echo "Ultimo tag trovato: $LATEST_TAG"
+    VERSION="$LATEST_TAG" # Imposta la variabile VERSION all'ultimo tag
     export ECR_REPOSITORY_NAME="$REPOSITORY"
+    export VERSION # Esporta la variabile VERSION
     return 0
   fi
 
   # Se non trova con prefisso, prova senza prefisso
   echo "Repository con prefisso non trovato, verifico $REPOSITORY_NO_PREFIX..."
   if aws ecr describe-repositories --repository-names "$REPOSITORY_NO_PREFIX" &>/dev/null; then
-    # Verifica se ci sono immagini nel repository
-    local IMAGE_COUNT
-    IMAGE_COUNT=$(aws ecr describe-images --repository-name "$REPOSITORY_NO_PREFIX" --query "length(imageDetails)" --output text)
+    # Ottieni l'ultimo tag dall'output di describe-images (ordinato per data di push)
+    LATEST_TAG=$(aws ecr describe-images --repository-name "$REPOSITORY_NO_PREFIX" --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
 
-    if [ "$IMAGE_COUNT" -eq "0" ]; then
-      echo "Repository $REPOSITORY_NO_PREFIX esiste ma non contiene immagini"
-      export ECR_REPOSITORY_NAME="$REPOSITORY_NO_PREFIX"
-      return 1
+    if [[ -z "$LATEST_TAG" ]]; then
+        echo "Nessun tag trovato per $REPOSITORY_NO_PREFIX. Impossibile determinare l'ultima versione"
+        export ECR_REPOSITORY_NAME="$REPOSITORY_NO_PREFIX"
+        return 1
     fi
 
-    echo "Repository $REPOSITORY_NO_PREFIX trovato con $IMAGE_COUNT immagini"
+    echo "Ultimo tag trovato: $LATEST_TAG"
+    VERSION="$LATEST_TAG" # Imposta la variabile VERSION all'ultimo tag
     export ECR_REPOSITORY_NAME="$REPOSITORY_NO_PREFIX"
+    export VERSION # Esporta la variabile VERSION
     return 0
   fi
 
   echo "Nessun repository trovato per il modulo $MODULE_NAME (cercato come $REPOSITORY e $REPOSITORY_NO_PREFIX)"
 
-  # Per tutti i moduli, tenta di creare il repository con prefisso auxdromos-
-  # perché è così che funziona la pipeline
-  echo "Tentativo di creazione del repository $REPOSITORY..."
-  if aws ecr create-repository --repository-name "$REPOSITORY" &>/dev/null; then
-    echo "Repository $REPOSITORY creato con successo"
-    export ECR_REPOSITORY_NAME="$REPOSITORY"
-    return 1
-  else
-    echo "Errore nella creazione del repository $REPOSITORY"
-    return 1
-  fi
+    # Per tutti i moduli, tenta di creare il repository con prefisso auxdromos-
+    # perché è così che funziona la pipeline. Ritorna errore dato che l'immagine non esiste ancora.
+    echo "Tentativo di creazione del repository $REPOSITORY..."
+    if aws ecr create-repository --repository-name "$REPOSITORY" &>/dev/null; then
+        echo "Repository $REPOSITORY creato con successo, ma non contiene ancora immagini."
+        export ECR_REPOSITORY_NAME="$REPOSITORY"
+        return 1
+    else
+        echo "Errore nella creazione del repository $REPOSITORY"
+        return 1
+    fi
 }
 
 # Funzione per effettuare il deploy di Keycloak e il setup
@@ -229,11 +231,7 @@ deploy_module() {
 
   # Determina le porte e le variabili d'ambiente specifiche per ogni modulo
   case "${MODULE_NAME}" in
-    discovery)
-      PORT="8761"
-      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit"
-      ;;
-    config-server)
+    configì)
       PORT="8888"
       ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
       ;;

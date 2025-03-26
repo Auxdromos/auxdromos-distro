@@ -10,15 +10,20 @@ deploy_sit:
 
 deploy_distro:
   stage: deploy_sit
-  image: amazon/aws-cli:latest
-  when: on_success  # Esecuzione automatica se gli stage precedenti hanno avuto successo
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+
   script:
     # Carica le variabili da module_info.env
     - if [ -f module_info.env ]; then . module_info.env; fi
+    - echo "DEBUG CI_COMMIT_REF_NAME = '$CI_COMMIT_REF_NAME'"
+    - echo "DEBUG MODULE_NAME = '$MODULE_NAME'"
+    - echo "DEBUG VERSION = '$VERSION'"
     # Controlla che il modulo sia "distro"
     - if [ "$MODULE_NAME" != "distro" ]; then echo "Il modulo non è distro, salto deploy_distro."; exit 0; fi
     # Controlla che il branch sia "distro" o "develop"
-    - if [[ "$CI_COMMIT_REF_NAME" != "distro" && "$CI_COMMIT_REF_NAME" != "develop" ]]; then echo "Branch $CI_COMMIT_REF_NAME non abilitato per deploy del modulo distro, salto deploy_distro."; exit 0; fi
+    - if [[ "$CI_COMMIT_REF_NAME" != "distro" && "$CI_COMMIT_REF_NAME" != "develop" && "$CI_COMMIT_REF_NAME" != "main" ]]; then echo "Branch $CI_COMMIT_REF_NAME non abilitato per deploy del modulo distro, salto deploy_distro."; exit 0; fi
     - echo "Deployment del modulo *distro* versione $VERSION in ambiente SIT (non eseguito sotto docker)..."
     - echo "Controllo che esista la cartella aws/sit/script:"
     - ls -la aws/sit/script
