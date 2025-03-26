@@ -11,11 +11,13 @@ deploy_sit:
 deploy_distro:
   stage: deploy_sit
   image: amazon/aws-cli:latest
-  only:
-    - /^distro$/   # Esegue questo job solo se il branch corrisponde a "distro"
-  when: on_success  # Esecuzione automatica in caso di successo degli stage precedenti
+  when: on_success  # Esecuzione automatica se gli stage precedenti hanno avuto successo
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
+    # Controlla che il modulo sia "distro"
+    - if [ "$MODULE_NAME" != "distro" ]; then echo "Il modulo non è distro, salto deploy_distro."; exit 0; fi
+    # Controlla che il branch sia "distro" o "develop"
+    - if [[ "$CI_COMMIT_REF_NAME" != "distro" && "$CI_COMMIT_REF_NAME" != "develop" ]]; then echo "Branch $CI_COMMIT_REF_NAME non abilitato per deploy del modulo distro, salto deploy_distro."; exit 0; fi
     - echo "Deployment del modulo *distro* versione $VERSION in ambiente SIT (non eseguito sotto docker)..."
     - echo "Controllo che esista la cartella aws/sit/script:"
     - ls -la aws/sit/script
@@ -24,7 +26,7 @@ deploy_distro:
     - chmod +x deploy_module.sh
     # Carica lo script in S3 nella cartella della versione, in modo che rimanga disponibile fino a un nuovo deploy
     - aws s3 cp deploy_module.sh "s3://${S3_BUCKET_NAME}/distro/${VERSION}/deploy_module.sh"
-    # Ottieni gli ID delle istanze target tramite tag (assicurati che le istanze abbiano i tag corretti)
+    # Ottieni gli ID delle istanze target tramite tag
     - |
       INSTANCE_IDS=$(aws ec2 describe-instances \
          --filters "Name=tag:Environment,Values=SIT" "Name=tag:Application,Values=auxdromos" "Name=instance-state-name,Values=running" \
@@ -35,7 +37,7 @@ deploy_distro:
         exit 1
       fi
       echo "Istanze target trovate: $INSTANCE_IDS"
-    # Copia lo script sulle istanze via SSM
+    # Copia lo script sulle istanze via SSM e lo esegue
     - aws ssm send-command \
       --document-name "AWS-RunShellScript" \
       --targets "Key=instanceids,Values=$INSTANCE_IDS" \
