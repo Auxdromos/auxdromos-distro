@@ -207,7 +207,6 @@ deploy_module() {
     exit 1
   fi
 
-
   echo "=== Inizio deploy di $MODULO $(date) ==="
 
   # Assicura che la variabile VERSION sia definita (esempio)
@@ -217,7 +216,7 @@ deploy_module() {
   REPOSITORY_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}"
 
   # Avvia o aggiorna il container con docker-compose
-  docker-compose -f docker-compose.yml up -d $MODULO
+  docker-compose -f /app/distro/artifacts/aws/sit/docker/docker-compose.yml up -d $MODULO
 }
 
 # Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
