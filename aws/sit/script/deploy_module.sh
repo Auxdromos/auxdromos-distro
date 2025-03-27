@@ -174,126 +174,50 @@ deploy_keycloak() {
 
 # Funzione per deployare un modulo generico
 deploy_module() {
-  local MODULE_NAME=$1
-  echo "===== Deploying ${MODULE_NAME}... ====="
+  # Determina il percorso assoluto della cartella base (una directory sopra lo script)
+  BASE_DIR="$(dirname "$(readlink -f "$0")")/.."
 
-  # Debug: verifichiamo il repository
-  echo "DEBUG: Verificando repository auxdromos-${MODULE_NAME}"
-  echo "DEBUG: AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}"
-  echo "DEBUG: Elenco di tutti i repository:"
-  aws ecr describe-repositories
-
-  echo "DEBUG: Tentativo esplicito di trovare auxdromos-${MODULE_NAME}:"
-  aws ecr describe-repositories --repository-names "auxdromos-${MODULE_NAME}" || true
-
-  # Verifica se l'immagine esiste su ECR
-  if ! check_image_exists "${MODULE_NAME}"; then
-    echo "⚠️ Nessuna immagine trovata per ${MODULE_NAME}. Il deploy verrà saltato."
-    return 1
-  fi
-
-  echo "Immagini trovate nel repository ${ECR_REPOSITORY_NAME}"
-
-  # Ottieni la versione più recente dal repository ECR
-  LATEST_VERSION=$(aws ecr describe-images --repository-name "${ECR_REPOSITORY_NAME}" \
-    --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text)
-
-  # Se il risultato è "None" o vuoto, imposta una versione di default o interrompi
-  if [[ "$LATEST_VERSION" == "None" || -z "$LATEST_VERSION" ]]; then
-    echo "⚠️ Nessun tag trovato per l'immagine più recente. Utilizzo 'latest'."
-    LATEST_VERSION="latest"
-  fi
-
-  echo "Ultima versione per ${MODULE_NAME} è ${LATEST_VERSION}"
-
-  # Connettersi al repository ECR - usa AWS_ACCOUNT_ID o estrai dall'URI repository
-  if [[ -z "$AWS_ACCOUNT_ID" ]]; then
-    # Estrai l'ID account dall'URI del repository
-    REPO_INFO=$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY_NAME}" --query 'repositories[0].repositoryUri' --output text)
-    AWS_ACCOUNT_ID=$(echo $REPO_INFO | cut -d'.' -f1)
-  fi
-
-  echo "Autenticazione al repository ECR..."
-  aws ecr get-login-password | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-
-  # Pull dell'immagine
-  REPOSITORY_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${LATEST_VERSION}"
-  echo "Pull dell'immagine ${REPOSITORY_URI}"
-  docker pull "${REPOSITORY_URI}"
-
-  # Stoppa e rimuovi il container esistente se presente
-  CONTAINER_NAME="auxdromos-${MODULE_NAME}"
-  if docker ps -a | grep -q "${CONTAINER_NAME}"; then
-    echo "Stopping e rimuovendo container esistente ${CONTAINER_NAME}..."
-    docker stop "${CONTAINER_NAME}" || true
-    docker rm "${CONTAINER_NAME}" || true
-  fi
-
-  # Determina le porte e le variabili d'ambiente specifiche per ogni modulo
-  case "${MODULE_NAME}" in
-    configì)
-      PORT="8888"
-      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
-      ;;
-    gateway)
-      PORT="8080"
-      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
-      ;;
-    rdbms)
-      PORT="8090"
-      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
-      ;;
-    backend)
-      PORT="8091"
-      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
-      ;;
-    idp)
-      PORT="8092"
-      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
-      ;;
-    *)
-      PORT="8080"
-      ENV_VARS="-e SPRING_PROFILES_ACTIVE=sit -e EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://auxdromos-discovery:8761/eureka/"
-      ;;
-  esac
-
-  # Aggiungi variabili d'ambiente da AWS se disponibili
-  if [[ ! -z "$AWS_ACCESS_KEY_ID" && ! -z "$AWS_SECRET_ACCESS_KEY" ]]; then
-    ENV_VARS="$ENV_VARS -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION"
-  fi
-
-  # Se si tratta del backend, aggiungi le variabili per il database se non è rdbms
-  if [[ "${MODULE_NAME}" == "backend" && ! -z "$DB_HOST" ]]; then
-    ENV_VARS="$ENV_VARS -e SPRING_DATASOURCE_URL=jdbc:postgresql://${DB_HOST}:5432/auxdromos?currentSchema=auxdromos&options=-c%20search_path%3Dauxdromos"
-    ENV_VARS="$ENV_VARS -e SPRING_DATASOURCE_USERNAME=${DB_USER:-postgres}"
-    ENV_VARS="$ENV_VARS -e SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-BbzcaI5HKm5wr3}"
-  fi
-
-  # Avvia il nuovo container
-  echo "Avvio container ${CONTAINER_NAME} con porta ${PORT}..."
-  docker run -d \
-    --name "${CONTAINER_NAME}" \
-    --network auxdromos-network \
-    -p "${PORT}:${PORT}" \
-    ${ENV_VARS} \
-    "${REPOSITORY_URI}"
-
-  # Verifica che il container sia stato avviato
-  if docker ps | grep -q "${CONTAINER_NAME}"; then
-    echo "✅ Container ${CONTAINER_NAME} avviato con successo!"
+  # Carica le variabili da BASE_DIR/env/deploy.env
+  if [[ -f "$BASE_DIR/env/deploy.env" ]]; then
+    source "$BASE_DIR/env/deploy.env"
   else
-    echo "❌ Errore nell'avvio del container ${CONTAINER_NAME}!"
-    docker logs "${CONTAINER_NAME}"
-    return 1
+    echo "Errore: File deploy.env non trovato in $BASE_DIR/env"
+    exit 1
   fi
 
-  # Mostra i primi log del container
-  echo "Mostrando i primi log del container..."
-  sleep 5  # Attendi che l'applicazione abbia avviato
-  docker logs "${CONTAINER_NAME}"
+  # Impostazione dei valori di default per i moduli se non presenti in deploy.env
+  MODULES=${MODULES:-"rdbms config gateway backend idp"}
+  MODULE_ORDER=${MODULE_ORDER:-"config rdbms idp backend gateway"}
 
-  echo "Deploy del modulo ${MODULE_NAME} completato!"
-  return 0
+  # Recupera il nome del modulo passato come primo argomento
+  MODULO=$1
+
+  if [[ -z "$MODULO" ]]; then
+    echo "Errore: nessun modulo specificato. Specificare un modulo o 'all' per deployare tutto."
+    echo "Moduli disponibili: $MODULES"
+    exit 1
+  fi
+
+  # Carica le variabili d'ambiente dal file .env del modulo.
+  MODULE_ENV_FILE="$BASE_DIR/env/${MODULO}.env"
+  if [[ -f "$MODULE_ENV_FILE" ]]; then
+    source "$MODULE_ENV_FILE"
+  else
+    echo "Errore: File .env non trovato per il modulo $MODULO: $MODULE_ENV_FILE"
+    exit 1
+  fi
+
+
+  echo "=== Inizio deploy di $MODULO $(date) ==="
+
+  # Assicura che la variabile VERSION sia definita (esempio)
+  VERSION=${VERSION:-"latest"}  # Imposta "latest" come predefinito se VERSION non è definita
+
+  # Costruisci il nome dell'immagine
+  REPOSITORY_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}"
+
+  # Avvia o aggiorna il container con docker-compose
+  docker-compose -f docker-compose.yml up -d $MODULO
 }
 
 # Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
