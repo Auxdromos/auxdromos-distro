@@ -331,6 +331,7 @@ deploy_sit:
            if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
              echo 'Trovato deploy_module.sh in /app/distro/artifacts/aws/sit/script';
              cd /app/distro/artifacts &&
+             chmod +x aws/sit/script/deploy_module.sh &&
              ./aws/sit/script/deploy_module.sh ${MODULE_NAME}
            else
              echo 'ERROR: deploy_module.sh non trovato in /app/distro/artifacts/aws/sit/script';
@@ -342,6 +343,7 @@ deploy_sit:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: on_success
+
 
 cleanup_s3:
   stage: cleanup
