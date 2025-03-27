@@ -275,55 +275,53 @@ tag_latest:
 
 deploy_sit:
   stage: deploy_sit
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [""]
+  image: alpine:latest
   dependencies:
     - extract_module_info
+  timeout: 15m
+  before_script:
+    - apk add --no-cache openssh-client bash aws-cli
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo "$EC2_PRIVATE_KEY" | sed 's/\\n/\n/g' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null 2>&1 || (echo "Invalid private key"; exit 1)
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
   script:
+    - set -e
+    - echo "Deploying module $MODULE_NAME, versione $VERSION"
     - if [ -f module_info.env ]; then . module_info.env; fi
-    - echo "Deployment dell'applicazione $MODULE_NAME versione $VERSION in ambiente SIT..."
-
-    - echo "Controllo che esista la cartella aws/sit/script:"
-    - ls -la aws/sit/script
-    # Utilizziamo lo script di deploy del repo, invece di generarne uno
-    - echo "Utilizzo script deploy_module.sh dal repository..."
-    - cp aws/sit/script/deploy_module.sh deploy_module.sh
-    - chmod +x deploy_module.sh
-
-    # Carichiamo lo script su S3 per poi scaricarlo via SSM all'interno dell'istanza
-    - aws s3 cp deploy_module.sh "s3://${S3_BUCKET_NAME}/distro/${VERSION}/deploy_module.sh"
-
-    # Otteniamo gli ID delle istanze di destinazione (SIT) tramite tag
-    - |
-      INSTANCE_IDS=$(aws ec2 describe-instances \
-        --filters "Name=tag:Environment,Values=SIT" "Name=tag:Application,Values=auxdromos" "Name=instance-state-name,Values=running" \
-        --query "Reservations[*].Instances[*].InstanceId" \
-        --output text)
-      
-      if [ -z "$INSTANCE_IDS" ]; then
-        echo "ERRORE: Nessuna istanza EC2 trovata con i tag specificati!"
-        exit 1
+    - >
+      if [ "$MODULE_NAME" = "distro" ]; then
+         echo "[Deploy] Modulo distro: scarico l'intero artifact dalla path S3..."
+         mkdir -p /tmp/${MODULE_NAME}
+         aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
+         echo "[Deploy] Pulisco eventuali vecchi artifact su EC2..."
+         ssh ${EC2_USER}@${EC2_HOST} "sudo rm -rf /app/${MODULE_NAME}/artifacts/*"
+         echo "[Deploy] Creo la directory target su EC2 (/app/${MODULE_NAME}/artifacts)..."
+         ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
+         echo "[Deploy] Copio i nuovi file dalla macchina locale all'EC2..."
+         scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+         echo "[Deploy] Estraggo i file ZIP (se presenti) su EC2..."
+         ssh ${EC2_USER}@${EC2_HOST} "cd /app/${MODULE_NAME}/artifacts && unzip -o distro-*.zip && rm -f distro-*.zip"
+         echo "[Deploy] Deployment per il modulo distro completato."
+      else
+         echo "[Deploy] Modulo $MODULE_NAME (non-distro): uso lo script deploy_module.sh presente nei file distro."
+         ssh ${EC2_USER}@${EC2_HOST} "
+           sudo mkdir -p /app/${MODULE_NAME} && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME};
+           if [ -f /app/distro/artifacts/aws/sit/script/deploy_module.sh ]; then
+             echo 'Trovato deploy_module.sh in /app/distro/artifacts/aws/sit/script';
+             cd /app/distro/artifacts &&
+             ./aws/sit/script/deploy_module.sh ${MODULE_NAME}
+           else
+             echo 'ERROR: deploy_module.sh non trovato in /app/distro/artifacts/aws/sit/script'
+           fi
+         "
       fi
-      
-      echo "Istanze target trovate: $INSTANCE_IDS"
-
-    # Eseguiamo lo script (ora presente su S3) sulle istanze via AWS SSM
-    - |
-      aws ssm send-command \
-        --document-name "AWS-RunShellScript" \
-        --targets "Key=instanceids,Values=$INSTANCE_IDS" \
-        --parameters commands=[
-          "aws s3 cp s3://${S3_BUCKET_NAME}/distro/${VERSION}/deploy_module.sh /tmp/deploy_module.sh",
-          "chmod +x /tmp/deploy_module.sh",
-          "/tmp/deploy_module.sh ${MODULE_NAME} ${VERSION}"
-        ] \
-        --output text
-
-    - echo "Comando di deployment inviato con successo! Verifica lo stato nel pannello AWS Systems Manager."
+    - echo "Deployment completato per $MODULE_NAME."
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
+      when: on_success
 
 cleanup_s3:
   stage: cleanup
