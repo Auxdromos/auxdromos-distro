@@ -224,7 +224,7 @@ deploy_module() {
   # ... esporta altre variabili necessarie ...
 
   # Esegui la sostituzione delle variabili nel file docker-compose.yml
-  envsubst < /app/distro/artifacts/aws/sit/docker/docker-compose.yml | docker compose -f - -p "${MODULO}" up -d "${MODULO}"
+  envsubst < /app/distro/artifacts/aws/sit/docker/docker-compose.yml | /usr/local/bin/docker-compose -f - -p "${MODULO}" up -d "${MODULO}"
 }
 
 # Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
