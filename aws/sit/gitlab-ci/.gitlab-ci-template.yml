@@ -121,9 +121,7 @@ package_configs:
     - set -x
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
-
     - apk add --no-cache zip
-
     - mkdir -p dist
     - |
       FILES_TO_ZIP=""
@@ -145,12 +143,16 @@ package_configs:
         echo "Creazione ZIP con: $FILES_TO_ZIP"
         zip -r "dist/$MODULE_NAME-$VERSION.zip" $FILES_TO_ZIP
       else
-        echo "AVVISO: Nessun file trovato da includere nel ZIP"
+        echo "AVVISO: Nessun file trovato da includere nel ZIP, genero ZIP vuoto"
         touch empty.txt
         zip -r "dist/$MODULE_NAME-$VERSION.zip" empty.txt
         rm empty.txt
       fi
-
+    - if [ -f "dist/$MODULE_NAME-$VERSION.zip" ]; then
+      echo "File ZIP creato dist/$MODULE_NAME-$VERSION.zip";
+      else
+      echo "ERRORE Il file ZIP non è stato creato"; exit 1;
+      fi
     - echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"$CI_COMMIT_REF_NAME\",\"commitHash\":\"$CI_COMMIT_SHA\"}" > dist/manifest.json
   dependencies:
     - extract_module_info
@@ -208,6 +210,7 @@ upload_to_s3:
   dependencies:
     - extract_module_info
     - build
+    - package_configs
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
@@ -216,9 +219,7 @@ upload_to_s3:
       else
         S3_PATH="develop/${MODULE_NAME}/${VERSION}/"
       fi
-
-    - echo "Upload su S3 per $MODULE_NAME versione $VERSION nel path $S3_PATH"
-
+    - echo "Uploading artifacts for $MODULE_NAME version $VERSION into s3://${S3_BUCKET_NAME}/${S3_PATH}"
     - |
       for jar in target/*.jar; do
         if [ -f "$jar" ]; then
@@ -227,18 +228,25 @@ upload_to_s3:
           aws s3 cp "$jar" "s3://${S3_BUCKET_NAME}/${S3_PATH}${jar_filename}"
         fi
       done
-
     - |
       if [ -d "target/distribution/" ]; then
         echo "Uploading distribution files..."
         aws s3 cp target/distribution/ "s3://${S3_BUCKET_NAME}/${S3_PATH}distribution/" --recursive
       fi
-
     - |
       if [ -f "target/build-info.json" ]; then
-        echo "Uploading build info..."
+        echo "Uploading build-info..."
         aws s3 cp target/build-info.json "s3://${S3_BUCKET_NAME}/${S3_PATH}build-info.json"
       fi
+    - |
+      if [ -f "dist/$MODULE_NAME-$VERSION.zip" ]; then
+        echo "Uploading ZIP file dist/$MODULE_NAME-$VERSION.zip..."
+        aws s3 cp "dist/$MODULE_NAME-$VERSION.zip" "s3://${S3_BUCKET_NAME}/${S3_PATH}$MODULE_NAME-$VERSION.zip"
+      else
+        echo "ERRORE: Il file ZIP dist/$MODULE_NAME-$VERSION.zip non esiste. Correggi il job package_configs."
+        exit 1
+      fi
+    - aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_PATH}" --recursive
 
 tag_latest:
   stage: tag_latest
@@ -293,36 +301,29 @@ deploy_sit:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - >
       if [ "$MODULE_NAME" = "distro" ]; then
-        echo "[Deploy] modulo DISTRO: downloading artifacts from S3 and uploading to EC2 (sovrascrivo la vecchia versione con la nuova come 'last')"
-
-        # Scarico gli artifact nella directory temporanea locale
-        mkdir -p /tmp/${MODULE_NAME}
-        aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
-
-        # Rimuovo i vecchi artifact presenti sulla macchina EC2
-        ssh ${EC2_USER}@${EC2_HOST} "sudo rm -rf /app/${MODULE_NAME}/artifacts/*"
-
-        # Creo la directory necessaria con i permessi corretti sulla EC2
-        ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts/ && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
-
-        # Copio i nuovi file dalla directory temporanea della macchina locale alla macchina EC2
-        scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
-
-        # Estrazione del file ZIP e gestione del tag "last"
-        ssh ${EC2_USER}@${EC2_HOST} "
-        cd /app/${MODULE_NAME}/artifacts/ &&
-        unzip -o ${MODULE_NAME}-${VERSION}.zip &&
-        # Rinomino il file ZIP con il tag last oppure lo rimuovo se preferisci
-        mv ${MODULE_NAME}-${VERSION}.zip ${MODULE_NAME}-last.zip &&
-        chmod -R +x /app/${MODULE_NAME}/artifacts/aws/sit/script/*.sh 2>/dev/null || true &&
-        echo 'ZIP file rinominato in ${MODULE_NAME}-last.zip'
-        "
-
-        # Aggiorno il file che indica la versione corrente sulla macchina EC2
-        echo "${MODULE_NAME}-${VERSION}" > /tmp/current-version.txt
-        scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
-
-        echo "Deploy per il modulo distro completato"
+         echo "[Deploy] Modulo distro: scarico gli artifact da S3 e li carico su EC2..."
+         mkdir -p /tmp/${MODULE_NAME}
+         aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
+         echo "[Deploy] Pulisco i vecchi artifact su EC2..."
+         ssh ${EC2_USER}@${EC2_HOST} "sudo rm -rf /app/${MODULE_NAME}/artifacts/*"
+         echo "[Deploy] Creo la directory target su EC2 (/app/${MODULE_NAME}/artifacts)..."
+         ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
+         echo "[Deploy] Copio i nuovi file dalla macchina locale all'EC2..."
+         scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+         echo "[Deploy] Verifico la presenza del file ZIP e inizio l'estrazione..."
+         ssh ${EC2_USER}@${EC2_HOST} "cd /app/${MODULE_NAME}/artifacts && \
+           if ls ${MODULE_NAME}-${VERSION}.zip >/dev/null 2>&1; then \
+             echo '[Deploy] ZIP file trovato. Inizio estrazione...'; \
+             unzip -o ${MODULE_NAME}-${VERSION}.zip || { echo '[Deploy] ERRORE: unzip fallito.'; exit 1; }; \
+             mv ${MODULE_NAME}-${VERSION}.zip ${MODULE_NAME}-last.zip; \
+           else \
+             echo '[Deploy] ERRORE: File ZIP ${MODULE_NAME}-${VERSION}.zip non trovato.'; \
+             exit 1; \
+           fi"
+         echo "[Deploy] Imposto la versione corrente come 'distro-last'"
+         echo "distro-last" > /tmp/current-version.txt
+         scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
+         echo "[Deploy] Deploy per il modulo distro completato."
       else
          echo "[Deploy] Modulo $MODULE_NAME (non-distro): uso lo script deploy_module.sh presente nei file distro."
          ssh ${EC2_USER}@${EC2_HOST} "
@@ -332,7 +333,8 @@ deploy_sit:
              cd /app/distro/artifacts &&
              ./aws/sit/script/deploy_module.sh ${MODULE_NAME}
            else
-             echo 'ERROR: deploy_module.sh non trovato in /app/distro/artifacts/aws/sit/script'
+             echo 'ERROR: deploy_module.sh non trovato in /app/distro/artifacts/aws/sit/script';
+             exit 1;
            fi
          "
       fi
