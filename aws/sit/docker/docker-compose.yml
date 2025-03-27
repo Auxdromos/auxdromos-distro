@@ -9,6 +9,8 @@ services:
       - ./env/${MODULO}.env
     ports:
       - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      - PROFILE=${PROFILE}
     networks:
       - auxdromos-network
     restart: unless-stopped
