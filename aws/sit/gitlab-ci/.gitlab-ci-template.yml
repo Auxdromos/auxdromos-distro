@@ -187,18 +187,6 @@ build_docker:
         fi
       
         aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-          
-        BUILD_ARGS=""
-        if [ -f "aws/sit/env/${MODULE_NAME}.env" ]; then
-          source "aws/sit/env/${MODULE_NAME}.env"
-          for VAR in $(egrep '^DOCKER_FILE_' "aws/sit/env/${MODULE_NAME}.env" | cut -d= -f1); do
-          BUILD_ARGS="$BUILD_ARGS --build-arg $VAR=${!VAR}"
-          done
-          echo "Variabili d'ambiente da ${MODULE_NAME}.env caricate: $BUILD_ARGS"
-        else
-          echo "File ${MODULE_NAME}.env non trovato, non carico variabili d'ambiente"
-          exit 1
-        fi 
         
         if [ -n "$BUILD_ARGS" ]; then
         docker build $BUILD_ARGS -t "auxdromos-${MODULE_NAME}:${VERSION}" .
