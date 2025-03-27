@@ -215,15 +215,16 @@ deploy_module() {
   # Costruisci il nome dell'immagine
   REPOSITORY_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}"
 
-  # Definisci le variabili per l'immagine Docker
   IMAGE_NAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}"
   CONTAINER_NAME="auxdromos-${MODULO}"
 
-  # Esegui docker-compose passando le variabili
-  docker-compose \
-    -f /app/distro/artifacts/aws/sit/docker/docker-compose.yml \
-    -p "${MODULO}"  # Imposta un project name univoco per evitare conflitti
-    up -d app  # Usa il nome generico del servizio 'app'
+  # Esporta le variabili in modo che envsubst possa leggerle
+  export IMAGE_NAME
+  export CONTAINER_NAME
+  # ... esporta altre variabili necessarie ...
+
+  # Esegui la sostituzione delle variabili nel file docker-compose.yml
+  envsubst < /app/distro/artifacts/aws/sit/docker/docker-compose.yml | docker compose -f - -p "${MODULO}" up -d "${MODULO}"
 }
 
 # Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
