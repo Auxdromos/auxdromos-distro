@@ -3,7 +3,7 @@ version: '3.8'
 
 services:
   ${MODULO}:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}
+    image: "${IMAGE_NAME}"
     container_name: auxdromos-${MODULO}
     env_file:
       - ./env/${MODULO}.env

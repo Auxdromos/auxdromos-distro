@@ -6,7 +6,7 @@
 
     <groupId>com.auxdromos</groupId>
     <artifactId>distro</artifactId>
-    <version>1.58</version>
+    <version>1.59</version>
     <packaging>jar</packaging>
 
     <properties>
