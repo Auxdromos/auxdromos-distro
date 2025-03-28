@@ -1,16 +1,84 @@
-# docker-compose.yml modificato
-version: '3.8'
-
 services:
-  ${MODULO}:
-    image: "${IMAGE_NAME}"
-    container_name: auxdromos-${MODULO}
+  config:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-config:latest
+    container_name: auxdromos-config
     env_file:
-      - ./env/${MODULO}.env
+      - ../env/config.env
     ports:
       - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
     environment:
       - PROFILE=${PROFILE}
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${INTERNAL_PORT}/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  rdbms:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-rdbms:latest
+    container_name: auxdromos-rdbms
+    env_file:
+      - ../env/rdbms.env
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      PROFILE: ${PROFILE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${INTERNAL_PORT}/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    container_name: keycloak-auxdromos
+    env_file:
+      - ../env/idp.env
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      DB_VENDOR: postgres
+      KC_DB_URL: ${KC_DB_URL}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    command: start-dev
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - auxdromos-network
+
+  idp:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:latest
+    container_name: auxdromos-idp
+    env_file:
+      - ../env/idp.env
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE}
     networks:
       - auxdromos-network
     restart: unless-stopped

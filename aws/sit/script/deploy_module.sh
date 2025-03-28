@@ -12,26 +12,16 @@ else
   exit 1
 fi
 
-# Creiamo la directory necessaria se non esiste
-mkdir -p ${BASE_PATH}/aws/sit
-
 # Assicura che la rete Docker esista
 docker network create auxdromos-network 2>/dev/null || true
 
-# Carica le variabili da BASE_DIR/env/deploy.env
-if [[ -f "$BASE_DIR/env/deploy.env" ]]; then
-  source "$BASE_DIR/env/deploy.env"
-else
-  echo "Errore: File deploy.env non trovato in $BASE_DIR/env"
-  exit 1
-fi
+# Recupera il nome del modulo passato come primo argomento
+MODULO=$1
 
 # Impostazione dei valori di default per i moduli se non presenti in deploy.env
 MODULES=${MODULES:-"rdbms config gateway backend idp"}
 MODULE_ORDER=${MODULE_ORDER:-"config rdbms idp backend gateway"}
 
-# Recupera il nome del modulo passato come primo argomento
-MODULO=$1
 
 if [[ -z "$MODULO" ]]; then
   echo "Errore: nessun modulo specificato. Specificare un modulo o 'all' per deployare tutto."
@@ -40,6 +30,15 @@ if [[ -z "$MODULO" ]]; then
 fi
 
 echo "=== Inizio deploy di $MODULO $(date) ==="
+
+# Carica le variabili specifiche del modulo *DOPO* aver ottenuto il nome del modulo
+if [[ -f "$BASE_DIR/env/${MODULO}.env" ]]; then
+  source "$BASE_DIR/env/${MODULO}.env"
+else
+  echo "Errore: File ${MODULO}.env non trovato in $BASE_DIR/env"
+  exit 1
+fi
+
 
 # Funzione per verificare se Keycloak è in esecuzione
 check_keycloak() {
@@ -54,6 +53,14 @@ check_image_exists() {
   local REPOSITORY_NO_PREFIX="${MODULE_NAME}"
 
   echo "Ricerca dell'ultima immagine per ${MODULE_NAME} su ECR..."
+
+  # Ottieni il token di autenticazione per ECR
+  aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+
+  if [ $? -ne 0 ]; then
+      echo "Errore di autenticazione con ECR. Verificare le credenziali AWS."
+      return 1
+  fi
 
   # Prima prova con il prefisso auxdromos (come fa la pipeline)
   if aws ecr describe-repositories --repository-names "$REPOSITORY" &>/dev/null; then
@@ -105,6 +112,9 @@ check_image_exists() {
         echo "Errore nella creazione del repository $REPOSITORY"
         return 1
     fi
+
+        export AWS_ACCOUNT_ID AWS_DEFAULT_REGION VERSION ECR_REPOSITORY_NAME # Esporta le variabili
+        return 0
 }
 
 # Funzione per effettuare il deploy di Keycloak e il setup
@@ -125,20 +135,6 @@ deploy_keycloak() {
   # Arresta e rimuovi i container esistenti, se presenti
   docker stop keycloak-db-auxdromos auxdromos-keycloak 2>/dev/null || true
   docker rm keycloak-db-auxdromos auxdromos-keycloak 2>/dev/null || true
-
-  # Avvia il container del database PostgreSQL per Keycloak
-  docker run -d \
-    --name keycloak-db-auxdromos \
-    --network auxdromos-network \
-    -e POSTGRES_DB="${POSTGRES_DB}" \
-    -e POSTGRES_USER="${POSTGRES_USER}" \
-    -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
-    -v keycloak-data:/var/lib/postgresql/data \
-    postgres:14
-
-  # Attendi che il database sia pronto
-  echo "Attendi che il database Keycloak sia pronto..."
-  sleep 10
 
   # Avvia il container Keycloak
   docker run -d \
@@ -173,11 +169,14 @@ deploy_keycloak() {
 }
 
 # Funzione per deployare un modulo generico
+#!/bin/bash
 deploy_module() {
   # Determina il percorso assoluto della cartella base (una directory sopra lo script)
-  BASE_DIR="$(dirname "$(readlink -f "$0")")/.."
+  local BASE_DIR="$(dirname "$(readlink -f "$0")")/.."
+  local MODULO="$1"
 
-  # Carica le variabili da BASE_DIR/env/deploy.env
+
+  # Carica le variabili GLOBALI da BASE_DIR/env/deploy.env (una sola volta)
   if [[ -f "$BASE_DIR/env/deploy.env" ]]; then
     source "$BASE_DIR/env/deploy.env"
   else
@@ -185,46 +184,45 @@ deploy_module() {
     exit 1
   fi
 
-  # Impostazione dei valori di default per i moduli se non presenti in deploy.env
-  MODULES=${MODULES:-"rdbms config gateway backend idp"}
-  MODULE_ORDER=${MODULE_ORDER:-"config rdbms idp backend gateway"}
+  # Nel deploy_module.sh
+  if check_image_exists "$MODULO"; then
+      IMAGE_NAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${VERSION}"
+      echo "Utilizzo l'immagine: $IMAGE_NAME"
 
-  # Recupera il nome del modulo passato come primo argomento
-  MODULO=$1
+      # Rinnova l'autenticazione AWS ECR
+      echo "Rinnovamento autenticazione AWS ECR..."
+      aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
 
-  if [[ -z "$MODULO" ]]; then
-    echo "Errore: nessun modulo specificato. Specificare un modulo o 'all' per deployare tutto."
-    echo "Moduli disponibili: $MODULES"
-    exit 1
-  fi
+      if [ $? -ne 0 ]; then
+          echo "Errore durante l'autenticazione a AWS ECR."
+          # Verifica dettagli ruolo IAM dell'istanza
+          echo "Dettagli ruolo IAM dell'istanza:"
+          TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+          ROLE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/iam/security-credentials/)
+          echo "Ruolo dell'istanza: $ROLE"
 
-  # Carica le variabili d'ambiente dal file .env del modulo.
-  MODULE_ENV_FILE="$BASE_DIR/env/${MODULO}.env"
-  if [[ -f "$MODULE_ENV_FILE" ]]; then
-    source "$MODULE_ENV_FILE"
+          # Verifica policy associate al ruolo
+          echo "Per favore, verificare che al ruolo dell'istanza siano associate le policy ECR necessarie:"
+          echo "- AmazonECR-FullAccess o policy personalizzata con i permessi ECR"
+          exit 1
+      fi
+
+      # Modifica il docker-compose.yml per usare l'immagine specifica invece di latest
+      sed -i "s@image: \${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:latest@image: ${IMAGE_NAME}@" "$BASE_DIR/docker/docker-compose.yml"
+
+      # Vai alla directory docker ed esegui docker-compose con i file ENV appropriati
+      cd "$BASE_DIR/docker"
+
+      # Stop e rimuovi il container se esiste
+      docker stop auxdromos-${MODULO} 2>/dev/null || true
+      docker rm auxdromos-${MODULO} 2>/dev/null || true
+
+      # Esegui docker-compose per il modulo specifico con i file ENV
+      docker-compose --env-file "$BASE_DIR/env/${MODULO}.env" --env-file "$BASE_DIR/env/deploy.env" up -d $MODULO
   else
-    echo "Errore: File .env non trovato per il modulo $MODULO: $MODULE_ENV_FILE"
-    exit 1
+      echo "Immagine non trovata per $MODULO. Deploy fallito."
+      exit 1
   fi
-
-  echo "=== Inizio deploy di $MODULO $(date) ==="
-
-  # Assicura che la variabile VERSION sia definita (esempio)
-  VERSION=${VERSION:-"latest"}  # Imposta "latest" come predefinito se VERSION non è definita
-
-  # Costruisci il nome dell'immagine
-  REPOSITORY_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}"
-
-  IMAGE_NAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}"
-  CONTAINER_NAME="auxdromos-${MODULO}"
-
-  # Esporta le variabili in modo che envsubst possa leggerle
-  export IMAGE_NAME
-  export CONTAINER_NAME
-  # ... esporta altre variabili necessarie ...
-
-  # Esegui la sostituzione delle variabili nel file docker-compose.yml
-  envsubst < /app/distro/artifacts/aws/sit/docker/docker-compose.yml | /usr/local/bin/docker-compose -f - -p "${MODULO}" up -d "${MODULO}"
 }
 
 # Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
@@ -233,11 +231,7 @@ deploy_all() {
   for module in $MODULE_ORDER; do
     echo "Deploying $module..."
 
-    if [[ "$module" == "idp" ]]; then
-      deploy_keycloak
-    else
-      deploy_module "$module"
-    fi
+    deploy_module "$module"
 
     # Attendi tra i deploy per assicurarti che i servizi siano pronti
     sleep 5
@@ -251,7 +245,7 @@ if [[ "$MODULO" == "all" ]]; then
 else
   # Verifica se il modulo specificato è valido
   if [[ " $MODULES " =~ " $MODULO " ]]; then
-    if [[ "$MODULO" == "idp" ]]; then
+    if [[ "$MODULO" == "keycloak" ]]; then
       deploy_keycloak
     else
       deploy_module "$MODULO"
