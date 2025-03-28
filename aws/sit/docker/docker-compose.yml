@@ -33,6 +33,9 @@ services:
     environment:
       PROFILE: ${PROFILE}
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+    depends_on:
+      config:
+        condition: service_healthy
     networks:
       - auxdromos-network
     restart: unless-stopped
@@ -62,6 +65,9 @@ services:
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
     command: start-dev
     restart: on-failure
+    depends_on:
+      rdbms:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
       interval: 30s
@@ -82,6 +88,73 @@ services:
     networks:
       - auxdromos-network
     restart: unless-stopped
+    depends_on:
+      config:
+        condition: service_healthy
+      rdbms:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${INTERNAL_PORT}/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:latest
+    container_name: auxdromos-backend
+    env_file:
+      - ../env/backend.env
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE}
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    depends_on:
+      config:
+        condition: service_healthy
+      rdbms:
+        condition: service_healthy
+      idp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${INTERNAL_PORT}/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  gateway:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:latest
+    container_name: auxdromos-gateway
+    env_file:
+      - ../env/gateway.env
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE}
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    depends_on:
+      config:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      idp:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${INTERNAL_PORT}/actuator/health"]
       interval: 30s

@@ -2,9 +2,9 @@
 set -e
 
  # Carica le variabili d'ambiente dal file .env se esiste
- if [ -f /Users/mbranca/Work/AuxDromos/auxdromos-idp/docker/.env ]; then
-   source /Users/mbranca/Work/AuxDromos/auxdromos-idp/docker/.env
- fi
+if [ -f aws/sit/setup/.env ]; then
+  source aws/sit/setup/.env
+fi
 
 # Cambia la directory se non sei già in "keycloak"
 if [ "$(basename "$PWD")" != "keycloak" ]; then

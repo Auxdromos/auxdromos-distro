@@ -19,8 +19,8 @@ docker network create auxdromos-network 2>/dev/null || true
 MODULO=$1
 
 # Impostazione dei valori di default per i moduli se non presenti in deploy.env
-MODULES=${MODULES:-"rdbms config gateway backend idp"}
-MODULE_ORDER=${MODULE_ORDER:-"config rdbms idp backend gateway"}
+MODULES=${MODULES:-"config rdbms keycloak gateway backend idp"}
+MODULE_ORDER=${MODULE_ORDER:-"config rdbms keycloak idp backend gateway"}
 
 
 if [[ -z "$MODULO" ]]; then
