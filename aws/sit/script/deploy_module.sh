@@ -219,6 +219,31 @@ deploy_module() {
 
       # Esegui docker-compose per il modulo specifico con i file ENV
       docker-compose --env-file "$BASE_DIR/env/${MODULO}.env" --env-file "$BASE_DIR/env/deploy.env" up -d $MODULO
+      # Verifica se il container è stato avviato correttamente
+      if docker ps | grep -q "auxdromos-${MODULO}"; then
+          echo "Container auxdromos-${MODULO} avviato con successo."
+
+          # Attendi alcuni secondi per permettere l'inizializzazione del servizio
+          echo "Attendi 5 secondi per l'inizializzazione..."
+          sleep 10
+
+          # Stampa i primi log del servizio
+          echo "=== Prime righe di log del servizio ${MODULO} ==="
+          docker logs --tail 20 auxdromos-${MODULO}
+          echo "=========================================="
+
+          echo "=== Deploy di $MODULO completato con successo $(date) ==="
+      else
+          echo "Errore nell'avvio del container auxdromos-${MODULO}."
+          echo "=== Deploy di $MODULO fallito $(date) ==="
+
+          # Mostra i log del container per facilitare il debug
+          echo "Ultime righe di log del container (se disponibili):"
+          docker logs --tail 20 auxdromos-${MODULO} 2>/dev/null || echo "Nessun log disponibile"
+
+          exit 1
+      fi
+
   else
       echo "Immagine non trovata per $MODULO. Deploy fallito."
       exit 1
