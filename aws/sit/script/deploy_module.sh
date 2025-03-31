@@ -184,6 +184,25 @@ deploy_module() {
     exit 1
   fi
 
+  # Verifica se config è già in esecuzione su Docker
+  if [[ "$MODULO" != "config" ]]; then # Evita di controllare config se stesso
+    if ! docker ps | grep -q "auxdromos-config"; then
+      echo "Modulo 'config' non avviato. Avvio in corso..."
+      deploy_module "config"
+      if ! docker ps | grep -q "auxdromos-config"; then # Secondo controllo dopo il tentativo di avvio.
+        echo "Errore: Impossibile avviare il modulo 'config'. Deploy di $MODULO interrotto."
+        exit 1
+      fi
+      # Stampa i primi log del servizio
+      echo "Attendi 10 secondi per l'inizializzazione..."
+      sleep 15
+      echo "=== Prime righe di log del servizio config ==="
+      docker logs --tail 20 auxdromos-congig
+      echo "=========================================="
+      echo "=== Deploy di config completato con successo $(date) ==="
+    fi
+  fi
+
   # Nel deploy_module.sh
   if check_image_exists "$MODULO"; then
       IMAGE_NAME="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${VERSION}"
@@ -224,7 +243,7 @@ deploy_module() {
           echo "Container auxdromos-${MODULO} avviato con successo."
 
           # Attendi alcuni secondi per permettere l'inizializzazione del servizio
-          echo "Attendi 5 secondi per l'inizializzazione..."
+          echo "Attendi 10 secondi per l'inizializzazione..."
           sleep 10
 
           # Stampa i primi log del servizio
