@@ -304,17 +304,27 @@ deploy_module() {
   cp "${COMPOSE_FILE_ORIGINAL}" "${TEMP_COMPOSE_FILE}"
 
   # Definisci il placeholder ESATTO da sostituire (con :latest e variabili espanse se necessario)
-  # NOTA: Assumiamo che il compose file originale usi :latest
-  local PLACEHOLDER_IMAGE="${FULL_REPO_BASE}/${REPO_NAME}:latest"
+  # Usiamo backslash per escape dei caratteri speciali $ { }
+  local PLACEHOLDER_PATTERN="image: \${AWS_ACCOUNT_ID}\.dkr\.ecr\.\${AWS_DEFAULT_REGION}\.amazonaws\.com/${REPO_NAME}:latest"
+  # Definisci la stringa di sostituzione
+  local REPLACEMENT_STRING="image: ${IMAGE_NAME}" # IMAGE_NAME contiene già il tag specifico
 
   # Modifica il file compose TEMPORANEO per usare l'immagine specifica
-  # Usiamo '|' come delimitatore per sed per evitare conflitti con '/' nei nomi immagine
-  sed -i "s|image: ${PLACEHOLDER_IMAGE}|image: ${IMAGE_NAME}|" "${TEMP_COMPOSE_FILE}"
+  # Usiamo '|' come delimitatore per sed
+  # Usiamo sed con -E per espressioni regolari estese (anche se qui non strettamente necessarie)
+  # Cerchiamo il pattern definito sopra e lo sostituiamo
+  sed -i "s|${PLACEHOLDER_PATTERN}|${REPLACEMENT_STRING}|" "${TEMP_COMPOSE_FILE}"
   if [ $? -ne 0 ]; then
       echo "Errore: Impossibile modificare il file compose temporaneo con sed."
+      # Stampa cosa stava cercando di sostituire per debug
+      echo "Pattern cercato: ${PLACEHOLDER_PATTERN}"
+      echo "Sostituzione: ${REPLACEMENT_STRING}"
+      # Stampa il contenuto del file temporaneo per debug
+      echo "Contenuto file temporaneo (${TEMP_COMPOSE_FILE}):"
+      cat "${TEMP_COMPOSE_FILE}"
       exit 1
   fi
-  # --- FINE MODIFICA ---
+  echo "File compose temporaneo modificato con successo." # Aggiunto per conferma
 
   # Vai alla directory docker ed esegui docker-compose con i file ENV appropriati
   cd "$BASE_DIR/docker"
