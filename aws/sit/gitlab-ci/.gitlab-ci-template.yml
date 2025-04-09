@@ -205,6 +205,8 @@ build_docker:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: on_success
+    - if: $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      when: on_success
 
 upload_to_s3:
   stage: upload_to_s3
@@ -251,7 +253,11 @@ upload_to_s3:
         exit 1
       fi
     - aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_PATH}" --recursive
-
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      when: on_success
 tag_latest:
   stage: tag_latest
   image:
@@ -284,7 +290,11 @@ tag_latest:
 
     - echo "Tagging della versione $VERSION come 'latest' per $MODULE_NAME nel path $S3_PATH"
     - aws s3 cp latest.json "s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
-
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      when: on_success
 deploy_sit:
   stage: deploy_sit
   image: alpine:latest
@@ -346,6 +356,8 @@ deploy_sit:
     - echo "Deployment completato per $MODULE_NAME."
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"'
       when: on_success
 
 
