@@ -53,7 +53,8 @@ check_version:
     - extract_module_info
   image:
     name: amazon/aws-cli:latest
-    entrypoint: [ "" ]
+    entrypoint:
+      - ''
   script: |
     set -e
     set -o pipefail
@@ -127,16 +128,17 @@ check_version:
        echo "Skipping version check for branch $CI_COMMIT_REF_NAME"
     fi
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
+    - if: $CI_COMMIT_BRANCH == "develop"
       when: on_success
-    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
+    - if: $CI_COMMIT_BRANCH == "main"
       when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+        == "develop"
       when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+        == "main"
       when: on_success
-    - when: never # Non eseguire per altri casi (es. push su feature)
-
+    - when: never
 # --- Stage: build ---
 build:
   stage: build
