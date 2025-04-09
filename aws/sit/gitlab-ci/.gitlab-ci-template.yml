@@ -93,14 +93,28 @@ check_version:
       S3_URI="s3://${S3_BUCKET_NAME}/${DEVELOP_PATH}"
       echo "Controllo esistenza versione su S3 path: ${S3_URI}"
 
-      # --- IMPROVED FOUND CAPTURE ---
-      # List objects and count lines. wc -l outputs count + newline. tr removes whitespace/newline.
-      # If path doesn't exist or is empty, ls returns nothing, wc -l gives 0.
-      FOUND_COUNT=$(aws s3 ls "${S3_URI}" 2>/dev/null | wc -l | tr -d '[:space:]')
+      # --- DEBUGGING S3 LS OUTPUT ---
+      echo "DEBUG: Eseguendo aws s3 ls ${S3_URI}"
+      S3_LS_OUTPUT=$(aws s3 ls "${S3_URI}" 2>&1) # Cattura sia stdout che stderr
+      S3_LS_EXIT_CODE=$?
+      echo "DEBUG: Codice uscita aws s3 ls: ${S3_LS_EXIT_CODE}"
+      echo "DEBUG: Output aws s3 ls:"
+      echo "${S3_LS_OUTPUT}"
+      echo "--- Fine Output aws s3 ls ---"
+      # --- END DEBUGGING ---
+
+      # --- IMPROVED FOUND CAPTURE (using captured output) ---
+      # Conta le righe dall'output catturato se il comando è riuscito
+      FOUND_COUNT="0" # Default a 0
+      if [[ ${S3_LS_EXIT_CODE} -eq 0 ]]; then
+          FOUND_COUNT=$(echo "${S3_LS_OUTPUT}" | wc -l | tr -d '[:space:]')
+      else
+          echo "AVVISO: aws s3 ls ha fallito (codice ${S3_LS_EXIT_CODE}), considero FOUND_COUNT=0."
+          # Potresti voler gestire diversamente errori specifici di s3 ls qui
+      fi
       # --- END IMPROVED CAPTURE ---
 
       echo "DEBUG FOUND_COUNT = $FOUND_COUNT" # Debug count
-
       # Use the reliably captured count for comparison
       if [[ "$FOUND_COUNT" -gt 0 ]]; then
         echo "Versione '$VERSION' per modulo '$MODULE_NAME' già presente su S3 in develop (${S3_URI}). Interrompo la pipeline."
