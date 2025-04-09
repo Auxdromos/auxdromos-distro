@@ -415,15 +415,38 @@ deploy_sit:
     - >
       if [ "$MODULE_NAME" = "distro" ]; then
          echo "[Deploy] Modulo distro: scarico gli artifact da S3 e li carico su EC2..."
-         mkdir -p /tmp/${MODULE_NAME}
-         # Assicurati di scaricare dal path corretto (main)
-         aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
+         LOCAL_TARGET_PATH="/tmp/${MODULE_NAME}/"
+         S3_SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+
+         mkdir -p "${LOCAL_TARGET_PATH}" # Crea la directory locale
+
+         echo "[Deploy] Tentativo di download da: ${S3_SOURCE_PATH} a ${LOCAL_TARGET_PATH}"
+         # Esegui il download e controlla l'esito
+         aws s3 cp "${S3_SOURCE_PATH}" "${LOCAL_TARGET_PATH}" --recursive
+         if [ $? -ne 0 ]; then
+           echo "[Deploy] ERRORE: Download da S3 fallito (codice di uscita $?)."
+           exit 1
+         fi
+
+         echo "[Deploy] Download da S3 completato. Verifico contenuto locale in ${LOCAL_TARGET_PATH}:"
+         # Lista il contenuto scaricato per verifica
+         ls -lR "${LOCAL_TARGET_PATH}"
+
+         # Controlla se la directory è vuota prima di procedere con scp
+         if [ -z "$(ls -A ${LOCAL_TARGET_PATH})" ]; then
+            echo "[Deploy] ERRORE: La directory ${LOCAL_TARGET_PATH} è vuota dopo il download da S3."
+            echo "[Deploy] Verifica che il percorso S3 '${S3_SOURCE_PATH}' contenga file."
+            exit 1
+         fi
+
          echo "[Deploy] Pulisco i vecchi artifact su EC2..."
          ssh ${EC2_USER}@${EC2_HOST} "sudo rm -rf /app/${MODULE_NAME}/artifacts/*"
          echo "[Deploy] Creo la directory target su EC2 (/app/${MODULE_NAME}/artifacts)..."
          ssh ${EC2_USER}@${EC2_HOST} "sudo mkdir -p /app/${MODULE_NAME}/artifacts && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME}"
          echo "[Deploy] Copio i nuovi file dalla macchina locale all'EC2..."
-         scp -r /tmp/${MODULE_NAME}/* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+         # Usa la variabile per chiarezza e assicurati che funzioni con scp
+         scp -r ${LOCAL_TARGET_PATH}* ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/artifacts/
+
          echo "[Deploy] Verifico la presenza del file ZIP e inizio l'estrazione..."
          ssh ${EC2_USER}@${EC2_HOST} "cd /app/${MODULE_NAME}/artifacts && \
            if ls ${MODULE_NAME}-${VERSION}.zip >/dev/null 2>&1; then \
@@ -439,6 +462,7 @@ deploy_sit:
          scp /tmp/current-version.txt ${EC2_USER}@${EC2_HOST}:/app/${MODULE_NAME}/current-version.txt
          echo "[Deploy] Deploy per il modulo distro completato."
       else
+         # ... (logica per moduli non-distro invariata) ...
          echo "[Deploy] Modulo $MODULE_NAME (non-distro): uso lo script deploy_module.sh presente nei file distro."
          ssh ${EC2_USER}@${EC2_HOST} "
            sudo mkdir -p /app/${MODULE_NAME} && sudo chown -R ${EC2_USER}:${EC2_USER} /app/${MODULE_NAME};
@@ -456,7 +480,5 @@ deploy_sit:
     - echo "Deployment completato per $MODULE_NAME."
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (es. push su feature/develop)
