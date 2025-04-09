@@ -1,15 +1,175 @@
-version: '3.8'
-
 services:
-  ${MODULO}:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-${MODULO}:${VERSION}
-    container_name: auxdromos-${MODULO}
+  config:
+    image: hyness/spring-cloud-config-server
+    container_name: auxdromos-config
     env_file:
-      - ./env/${MODULO}.env
+      - ../env/config.env
     ports:
-    - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+      - 8888:8888
+    environment:
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=https://gitlab.com/auxdromos/auxdromos-configuration.git
+      - SPRING_CLOUD_BUS_ENABLED=false
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=oauth2
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=glpat-icte6rcutahRVZ_72Xv5 # Consider using secrets management
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL=master
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS=configs/{application},configs/{application}/{profile}
+      - MANAGEMENT_ENDPOINT_HEALTH_ENABLED=true
+      - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health
+      - JAVA_TOOL_OPTIONS=XX:ReservedCodeCacheSize=32M -Xss256K -XX:MaxMetaspaceSize=64M -Xmx192m -XX:MaxDirectMemorySize=10M -XX:MaxRAMPercentage=75.0
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
     networks:
       - auxdromos-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+        reservations:
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  rdbms:
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-rdbms:${RDBMS_IMAGE_TAG:-latest}
+    container_name: auxdromos-rdbms
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "sit"
+      SPRING_PROFILES_ACTIVE: "sit"
+      SPRING_APPLICATION_NAME: "rdbms"
+      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    restart: unless-stopped
+    networks:
+      - auxdromos-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    container_name: auxdromos-keycloak
+    ports:
+      - "${EXTERNAL_PORT:-8082}:8080"
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: sit-auxdromos.cjgmm0kewpv2.us-east-1.rds.amazonaws.com
+      KC_DB_URL_DATABASE: sit-auxdromos
+      KC_DB_USERNAME: auxdromos
+      KC_DB_PASSWORD: DujDKqZHf60iiXPCtmHk # Consider using secrets management
+      KC_DB_SCHEMA: keycloak
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: adminpassword # Consider using secrets management
+      KC_HOSTNAME: sit.idp.auxdromos.it
+      KC_HTTP_ENABLED: 'true'
+      KC_PROXY: edge
+      KC_HTTP_RELATIVE_PATH: /
+      KC_HOSTNAME_STRICT: 'false'
+      KC_HEALTH_ENABLED: 'true'
+      KC_HTTP_MAX_CONNECTIONS: 50000
+      QUARKUS_HTTP_ACCESS_LOG_ENABLED: 'true'
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+        reservations:
+          memory: 1G
+    command: start-dev
+    restart: unless-stopped
+    networks:
+      - auxdromos-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  idp:
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:${IDP_IMAGE_TAG:-latest}
+    container_name: auxdromos-idp
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "sit"
+      SPRING_PROFILES_ACTIVE: "sit"
+      SPRING_APPLICATION_NAME: "idp"
+      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:${BACKEND_IMAGE_TAG:-latest}
+    container_name: auxdromos-backend
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "sit"
+      SPRING_PROFILES_ACTIVE: "sit"
+      SPRING_APPLICATION_NAME: "backend"
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  gateway:
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:${GATEWAY_IMAGE_TAG:-latest}
+    container_name: auxdromos-gateway
+    ports:
+      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "sit"
+      SPRING_PROFILES_ACTIVE: "sit"
+      SPRING_APPLICATION_NAME: "gateway"
+      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   auxdromos-network:
