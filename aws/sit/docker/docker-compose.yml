@@ -10,7 +10,7 @@ services:
       - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=https://gitlab.com/auxdromos/auxdromos-configuration.git
       - SPRING_CLOUD_BUS_ENABLED=false
       - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=oauth2
-      - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=glpat-icte6rcutahRVZ_72Xv5
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=glpat-icte6rcutahRVZ_72Xv5 # Consider using secrets management
       - SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL=master
       - SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS=configs/{application},configs/{application}/{profile}
       - MANAGEMENT_ENDPOINT_HEALTH_ENABLED=true
@@ -34,7 +34,8 @@ services:
         max-file: "3"
 
   rdbms:
-    image: 463470955561.dkr.ecr.us-east-1.amazonaws.com/auxdromos-rdbms:latest
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-rdbms:${RDBMS_IMAGE_TAG:-latest}
     container_name: auxdromos-rdbms
     ports:
       - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
@@ -67,10 +68,10 @@ services:
       KC_DB_URL_HOST: sit-auxdromos.cjgmm0kewpv2.us-east-1.rds.amazonaws.com
       KC_DB_URL_DATABASE: sit-auxdromos
       KC_DB_USERNAME: auxdromos
-      KC_DB_PASSWORD: DujDKqZHf60iiXPCtmHk
+      KC_DB_PASSWORD: DujDKqZHf60iiXPCtmHk # Consider using secrets management
       KC_DB_SCHEMA: keycloak
       KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: adminpassword
+      KEYCLOAK_ADMIN_PASSWORD: adminpassword # Consider using secrets management
       KC_HOSTNAME: sit.idp.auxdromos.it
       KC_HTTP_ENABLED: 'true'
       KC_PROXY: edge
@@ -96,7 +97,8 @@ services:
         max-file: "3"
 
   idp:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:latest
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:${IDP_IMAGE_TAG:-latest}
     container_name: auxdromos-idp
     ports:
       - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
@@ -120,7 +122,8 @@ services:
         max-file: "3"
 
   backend:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:latest
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:${BACKEND_IMAGE_TAG:-latest}
     container_name: auxdromos-backend
     ports:
       - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
@@ -144,7 +147,8 @@ services:
         max-file: "3"
 
   gateway:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:latest
+    # Modifica qui: usa variabile d'ambiente per il tag
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:${GATEWAY_IMAGE_TAG:-latest}
     container_name: auxdromos-gateway
     ports:
       - "${EXTERNAL_PORT}:${INTERNAL_PORT}"

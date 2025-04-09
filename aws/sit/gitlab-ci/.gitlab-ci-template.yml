@@ -12,6 +12,7 @@ stages:
   - cleanup
   - deploy_sit
 
+# --- Stage: prepare ---
 extract_module_info:
   stage: prepare
   script:
@@ -25,7 +26,6 @@ extract_module_info:
         export MODULE_NAME="auxdromos-distro"
         export VERSION="1.0.0-${CI_COMMIT_SHORT_SHA}"
       fi
-
     - echo "MODULE_NAME=$MODULE_NAME" >> module_info.env
     - echo "VERSION=$VERSION" >> module_info.env
     - echo "Modulo $MODULE_NAME, Versione $VERSION"
@@ -34,7 +34,9 @@ extract_module_info:
   artifacts:
     reports:
       dotenv: module_info.env
+  # Nessuna regola specifica: viene eseguito sempre all'inizio se la pipeline parte.
 
+# --- Stage: check_version ---
 check_version:
   stage: check_version
   dependencies:
@@ -45,44 +47,51 @@ check_version:
   script: |
     set -e
     set -o pipefail
-
     echo "Verifica della versione..."
-
-    if [ -f module_info.env ]; then
-      . module_info.env
-    fi
-
+    if [ -f module_info.env ]; then . module_info.env; fi
     if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
       if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
         echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
         exit 1
       fi
-    
       if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
         echo "Errore: La versione '$VERSION' è già presente su ECR."
         exit 1
       fi
-    
       echo "Versione valida per main. Procedo..."
-    else
+    elif [[ "$CI_COMMIT_REF_NAME" == "develop" ]]; then
+      # Per develop, controlliamo solo S3 (come faceva prima per i branch non-main)
       DEVELOP_PATH="develop/${MODULE_NAME}/${VERSION}/"
       FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${DEVELOP_PATH}" 2>/dev/null | wc -l || echo 0)
       echo "DEBUG FOUND = $FOUND per path ${DEVELOP_PATH}"
-
       if [[ "$FOUND" -gt 0 ]]; then
         echo "Versione già presente su S3 in develop. Interrompo la pipeline."
         exit 1
       else
         echo "Versione non presente su S3 in develop. Procedo..."
       fi
+    else
+       # Per altri branch (es. feature), non eseguiamo questo check
+       echo "Skipping version check for branch $CI_COMMIT_REF_NAME"
     fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi (es. push su feature)
 
+# --- Stage: build ---
 build:
   stage: build
   image: maven:3.9.9-amazoncorretto-17
   dependencies:
     - extract_module_info
-    - check_version
+    # Rimuoviamo check_version dalle dipendenze perché non sempre viene eseguito prima
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Build del modulo $MODULE_NAME..."
@@ -102,18 +111,44 @@ build:
       - target/*.jar
       - target/distribution/
       - target/build-info.json
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\//' # Push su feature/*
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "develop"'      # Push su develop
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "main"'         # Push su main
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi
 
+# --- Stage: test ---
 test:
   stage: test
   image: maven:3.9.9-amazoncorretto-17
   dependencies:
     - extract_module_info
-    - build
+    - build # Dipende dal job di build
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - echo "Test del modulo $MODULE_NAME..."
     - mvn test
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\//' # Push su feature/*
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "develop"'      # Push su develop
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "main"'         # Push su main
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi
 
+# --- Stage: package ---
 package_configs:
   stage: package
   image: alpine:latest
@@ -131,14 +166,12 @@ package_configs:
           echo "Aggiungo directory $DIR al ZIP"
         fi
       done
-      
       for EXT in yml yaml properties; do
         if ls *.$EXT 1>/dev/null 2>&1; then
           FILES_TO_ZIP="$FILES_TO_ZIP *.$EXT"
           echo "Aggiungo file *.$EXT al ZIP"
         fi
       done
-      
       if [ -n "$FILES_TO_ZIP" ]; then
         echo "Creazione ZIP con: $FILES_TO_ZIP"
         zip -r "dist/$MODULE_NAME-$VERSION.zip" $FILES_TO_ZIP
@@ -148,19 +181,26 @@ package_configs:
         zip -r "dist/$MODULE_NAME-$VERSION.zip" empty.txt
         rm empty.txt
       fi
-    - if [ -f "dist/$MODULE_NAME-$VERSION.zip" ]; then
-      echo "File ZIP creato dist/$MODULE_NAME-$VERSION.zip";
-      else
-      echo "ERRORE Il file ZIP non è stato creato"; exit 1;
-      fi
+    - if [ -f "dist/$MODULE_NAME-$VERSION.zip" ]; then echo "File ZIP creato dist/$MODULE_NAME-$VERSION.zip"; else echo "ERRORE Il file ZIP non è stato creato"; exit 1; fi
     - echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"$CI_COMMIT_REF_NAME\",\"commitHash\":\"$CI_COMMIT_SHA\"}" > dist/manifest.json
   dependencies:
     - extract_module_info
-    - check_version
+    # Rimuoviamo check_version dalle dipendenze
   artifacts:
     paths:
       - dist/
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi (es. push su feature)
 
+# --- Stage: docker ---
 build_docker:
   stage: docker
   image: docker:latest
@@ -168,7 +208,7 @@ build_docker:
     - docker:dind
   dependencies:
     - extract_module_info
-    - build
+    - build # Dipende dal job di build
   before_script:
     - apk add --no-cache aws-cli curl
   script:
@@ -177,7 +217,6 @@ build_docker:
     - |
       if [ -f "Dockerfile" ]; then
         echo "Dockerfile trovato per $MODULE_NAME, procedo con build e push"
-      
         if ! aws ecr describe-repositories --repository-names auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
           echo "Repository ECR 'auxdromos-$MODULE_NAME' non esiste, lo creo..."
           aws ecr create-repository --repository-name auxdromos-$MODULE_NAME --region $AWS_DEFAULT_REGION
@@ -185,29 +224,26 @@ build_docker:
         else
           echo "Repository ECR 'auxdromos-$MODULE_NAME' esiste già."
         fi
-      
         aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-        
-        if [ -n "$BUILD_ARGS" ]; then
-        docker build $BUILD_ARGS -t "auxdromos-${MODULE_NAME}:${VERSION}" .
-        else
-        docker build -t "auxdromos-${MODULE_NAME}:${VERSION}" .
-        fi
-      
+        if [ -n "$BUILD_ARGS" ]; then docker build $BUILD_ARGS -t "auxdromos-${MODULE_NAME}:${VERSION}" .; else docker build -t "auxdromos-${MODULE_NAME}:${VERSION}" .; fi
         docker tag auxdromos-$MODULE_NAME:$VERSION $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
-      
         docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/auxdromos-$MODULE_NAME:$VERSION
-      
         echo "Immagine Docker caricata con successo: auxdromos-$MODULE_NAME:$VERSION"
       else
         echo "Dockerfile non trovato per $MODULE_NAME, salto build e push Docker"
       fi
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
       when: on_success
-    - if: $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"
+    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
       when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi (es. push su feature)
 
+# --- Stage: upload_to_s3 ---
 upload_to_s3:
   stage: upload_to_s3
   image:
@@ -215,14 +251,14 @@ upload_to_s3:
     entrypoint: [ "" ]
   dependencies:
     - extract_module_info
-    - build
-    - package_configs
+    - build # Dipende dagli artifact di build
+    - package_configs # Dipende dagli artifact di package
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
       if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
         S3_PATH="${MODULE_NAME}/${VERSION}/"
-      else
+      else # Assume develop branch or MR targetting develop/main
         S3_PATH="develop/${MODULE_NAME}/${VERSION}/"
       fi
     - echo "Uploading artifacts for $MODULE_NAME version $VERSION into s3://${S3_BUCKET_NAME}/${S3_PATH}"
@@ -254,10 +290,17 @@ upload_to_s3:
       fi
     - aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_PATH}" --recursive
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
       when: on_success
-    - if: $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"
+    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
       when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi (es. push su feature)
+
+# --- Stage: tag_latest ---
 tag_latest:
   stage: tag_latest
   image:
@@ -265,18 +308,17 @@ tag_latest:
     entrypoint: [ "" ]
   dependencies:
     - extract_module_info
-    - upload_to_s3
+    - upload_to_s3 # Deve avvenire dopo l'upload
   script:
     - if [ -f module_info.env ]; then . module_info.env; fi
     - |
       if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
         S3_PATH="${MODULE_NAME}/"
         LATEST_PATH="${MODULE_NAME}/latest.json"
-      else
+      else # Assume develop branch or MR targetting develop/main
         S3_PATH="develop/${MODULE_NAME}/"
         LATEST_PATH="develop/${MODULE_NAME}/latest.json"
       fi
-
     - |
       cat > latest.json <<EOF
       {
@@ -287,14 +329,71 @@ tag_latest:
         "commitHash": "$CI_COMMIT_SHA"
       }
       EOF
-
     - echo "Tagging della versione $VERSION come 'latest' per $MODULE_NAME nel path $S3_PATH"
     - aws s3 cp latest.json "s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
       when: on_success
-    - if: $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"
+    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
       when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi (es. push su feature)
+
+# --- Stage: cleanup ---
+cleanup_s3:
+  stage: cleanup
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [ "" ]
+  dependencies:
+    - extract_module_info
+  script:
+    - if [ -f module_info.env ]; then . module_info.env; fi
+    - |
+      if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
+        S3_BASE_PATH="${MODULE_NAME}/"
+      else # Assume develop branch or MR targetting develop/main
+        S3_BASE_PATH="develop/${MODULE_NAME}/"
+      fi
+    - echo "Pulizia S3 per $S3_BASE_PATH, mantenendo solo le ultime 5 versioni..."
+    - |
+      echo "Elenco contenuti in s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}"
+      aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}"
+      VERSIONS=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}" | grep '/$' | grep -E '[0-9]+\.[0-9]+' | awk '{print $2}' | sed 's#/$##' | sort -t. -k1,1n -k2,2n -k3,3n)
+      echo "Versioni trovate dopo il filtraggio:"
+      echo "$VERSIONS"
+      VERSION_COUNT=$(echo "$VERSIONS" | grep -v '^$' | wc -l)
+      echo "Numero di versioni valide: $VERSION_COUNT"
+      if [[ $VERSION_COUNT -gt 5 ]]; then
+        TO_DELETE=$(($VERSION_COUNT - 5))
+        echo "Rimozione delle $TO_DELETE versioni più vecchie..."
+        VERSIONS_TO_DELETE=$(echo "$VERSIONS" | head -n $TO_DELETE)
+        echo "Versioni da eliminare:"
+        echo "$VERSIONS_TO_DELETE"
+        for OLD_VERSION in $VERSIONS_TO_DELETE; do
+          if [[ -n "$OLD_VERSION" ]]; then
+            echo "Rimozione versione $OLD_VERSION da S3..."
+            aws s3 rm "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}${OLD_VERSION}/" --recursive
+          fi
+        done
+      else
+        echo "Ci sono $VERSION_COUNT versioni, non è necessaria alcuna pulizia (< 6)."
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi (es. push su feature)
+
+# --- Stage: deploy_sit ---
 deploy_sit:
   stage: deploy_sit
   image: alpine:latest
@@ -317,6 +416,7 @@ deploy_sit:
       if [ "$MODULE_NAME" = "distro" ]; then
          echo "[Deploy] Modulo distro: scarico gli artifact da S3 e li carico su EC2..."
          mkdir -p /tmp/${MODULE_NAME}
+         # Assicurati di scaricare dal path corretto (main)
          aws s3 cp "s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" /tmp/${MODULE_NAME}/ --recursive
          echo "[Deploy] Pulisco i vecchi artifact su EC2..."
          ssh ${EC2_USER}@${EC2_HOST} "sudo rm -rf /app/${MODULE_NAME}/artifacts/*"
@@ -355,56 +455,8 @@ deploy_sit:
       fi
     - echo "Deployment completato per $MODULE_NAME."
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
       when: on_success
-    - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
       when: on_success
-
-
-cleanup_s3:
-  stage: cleanup
-  image:
-    name: amazon/aws-cli:latest
-    entrypoint: [ "" ]
-  dependencies:
-    - extract_module_info
-  script:
-    - if [ -f module_info.env ]; then . module_info.env; fi
-    - |
-      if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
-        S3_BASE_PATH="${MODULE_NAME}/"
-      else
-        S3_BASE_PATH="develop/${MODULE_NAME}/"
-      fi
-
-    - echo "Pulizia S3 per $S3_BASE_PATH, mantenendo solo le ultime 5 versioni..."
-    - |
-      echo "Elenco contenuti in s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}"
-      aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}"
-      
-      VERSIONS=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}" | grep '/$' | grep -E '[0-9]+\.[0-9]+' | awk '{print $2}' | sed 's#/$##' | sort -t. -k1,1n -k2,2n -k3,3n)
-      
-      echo "Versioni trovate dopo il filtraggio:"
-      echo "$VERSIONS"
-      
-      VERSION_COUNT=$(echo "$VERSIONS" | grep -v '^$' | wc -l)
-      echo "Numero di versioni valide: $VERSION_COUNT"
-      
-      if [[ $VERSION_COUNT -gt 5 ]]; then
-        TO_DELETE=$(($VERSION_COUNT - 5))
-        echo "Rimozione delle $TO_DELETE versioni più vecchie..."
-      
-        VERSIONS_TO_DELETE=$(echo "$VERSIONS" | head -n $TO_DELETE)
-      
-        echo "Versioni da eliminare:"
-        echo "$VERSIONS_TO_DELETE"
-      
-        for OLD_VERSION in $VERSIONS_TO_DELETE; do
-          if [[ -n "$OLD_VERSION" ]]; then
-            echo "Rimozione versione $OLD_VERSION da S3..."
-            aws s3 rm "s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}${OLD_VERSION}/" --recursive
-          fi
-        done
-      else
-        echo "Ci sono $VERSION_COUNT versioni, non è necessaria alcuna pulizia (< 6)."
-      fi
+    - when: never # Non eseguire per altri casi (es. push su feature/develop)

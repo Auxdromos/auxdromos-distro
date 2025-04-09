@@ -203,7 +203,6 @@ done
 }
 
 # Funzione per deployare un modulo generico
-#!/bin/bash
 deploy_module() {
   # Determina il percorso assoluto della cartella base (una directory sopra lo script)
   local BASE_DIR="$(dirname "$(readlink -f "$0")")/.."
@@ -224,46 +223,18 @@ deploy_module() {
     exit 1
   fi
 
-  # --- SEZIONE GESTIONE MODULO CONFIG (invariata) ---
-#  if [[ "$MODULO" != "config" ]]; then
-#    if ! docker ps --format '{{.Names}}' | grep -q "^auxdromos-config$"; then # Controllo più preciso del nome container
-#      echo "Modulo 'config' non avviato. Avvio in corso..."
-#      deploy_module "config" # Chiamata ricorsiva
-#      local config_start_status=$?
-#      if [ $config_start_status -ne 0 ]; then
-#         echo "Errore: Fallito l'avvio del modulo 'config'. Deploy di $MODULO interrotto."
-#         exit 1
-#      fi
-#      if ! docker ps --format '{{.Names}}' | grep -q "^auxdromos-config$"; then
-#        echo "Errore: Impossibile avviare il modulo 'config' anche dopo il tentativo. Deploy di $MODULO interrotto."
-#        exit 1
-#      fi
-#      echo "Attendi 15 secondi per l'inizializzazione di config..."
-#      sleep 15
-#      echo "=== Prime righe di log del servizio config ==="
-#      docker logs --tail 20 auxdromos-config # Corretto typo auxdromos-congig -> auxdromos-config
-#      echo "=========================================="
-#      echo "=== Deploy di config completato con successo $(date) ==="
-#    fi
-#  fi
-  # --- FINE SEZIONE GESTIONE MODULO CONFIG ---
-
-
-  # --- NUOVA SEZIONE: TROVA L'ULTIMO TAG DA ECR ---
+  # --- TROVA L'ULTIMO TAG DA ECR ---
   local REPO_NAME="auxdromos-${MODULO}" # Costruisce il nome del repository ECR
   local FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
 
   echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
 
-  # Interroga ECR per le immagini, ordinate per data di push (default), prendi l'ultima (-1) e il suo primo tag ([0])
-  # NOTA: Assicurati che AWS CLI v2 sia installata e funzionante
   LATEST_TAG=$(aws ecr describe-images \
                 --repository-name "${REPO_NAME}" \
                 --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
                 --output text \
-                --region "${AWS_DEFAULT_REGION}" 2>/dev/null) # Redirige stderr per non sporcare l'output in caso di errori "minori" come repo vuoto
+                --region "${AWS_DEFAULT_REGION}" 2>/dev/null)
 
-  # Verifica se il comando ha avuto successo e se il tag è stato trovato
   if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "None" ]; then
       echo "Errore: Impossibile trovare l'ultimo tag per il repository ${REPO_NAME} in ECR."
       echo "Possibili cause: Repository non esiste, nessun'immagine pushata, errore AWS CLI o permessi insufficienti."
@@ -277,69 +248,37 @@ deploy_module() {
       else
           echo "Impossibile recuperare metadati EC2 (potrebbe non essere un'istanza EC2)."
       fi
-      exit 1
+      exit 1 # Esce se non trova il tag
   fi
 
-  # Costruisci il nome completo dell'immagine con il tag trovato
-  local IMAGE_NAME="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
-  echo "Utilizzo l'immagine trovata: $IMAGE_NAME"
-  # --- FINE NUOVA SEZIONE ---
+  local IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
+  echo "Utilizzo l'immagine trovata: $IMAGE_NAME_WITH_TAG"
+  # --- FINE TROVA TAG ---
 
 
-  # Rinnova l'autenticazione AWS ECR (invariato)
+  # Rinnova l'autenticazione AWS ECR
   echo "Rinnovamento autenticazione AWS ECR..."
   aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${FULL_REPO_BASE}
   if [ $? -ne 0 ]; then
       echo "Errore durante l'autenticazione a AWS ECR."
-      # ... (gestione errore autenticazione come prima) ...
       exit 1
   fi
+  echo "Login Succeeded" # Aggiunto per coerenza con il log precedente
 
-  # --- MODIFICA: USA UN FILE COMPOSE TEMPORANEO ---
-  # Crea un file compose temporaneo per evitare di modificare l'originale
-  local TEMP_COMPOSE_FILE=$(mktemp)
-  # Assicurati che il file temporaneo venga eliminato all'uscita dallo script
-  trap 'rm -f "$TEMP_COMPOSE_FILE"' EXIT SIGINT SIGTERM
 
-  cp "${COMPOSE_FILE_ORIGINAL}" "${TEMP_COMPOSE_FILE}"
+  # --- RIMOSSA LA SEZIONE DI MODIFICA DEL FILE COMPOSE CON SED ---
 
-  # Definisci il placeholder ESATTO da sostituire (con :latest e variabili espanse se necessario)
-  # Usiamo backslash per escape dei caratteri speciali $ { }
-  local PLACEHOLDER_PATTERN="image: \${AWS_ACCOUNT_ID}\.dkr\.ecr\.\${AWS_DEFAULT_REGION}\.amazonaws\.com/${REPO_NAME}:latest"
-  # Definisci la stringa di sostituzione
-  local REPLACEMENT_STRING="image: ${IMAGE_NAME}" # IMAGE_NAME contiene già il tag specifico
 
-  # Modifica il file compose TEMPORANEO per usare l'immagine specifica
-  # Usiamo '|' come delimitatore per sed
-  # Usiamo sed con -E per espressioni regolari estese (anche se qui non strettamente necessarie)
-  # Cerchiamo il pattern definito sopra e lo sostituiamo
-  sed -i "s|${PLACEHOLDER_PATTERN}|${REPLACEMENT_STRING}|" "${TEMP_COMPOSE_FILE}"
-  if [ $? -ne 0 ]; then
-      echo "Errore: Impossibile modificare il file compose temporaneo con sed."
-      # Stampa cosa stava cercando di sostituire per debug
-      echo "Pattern cercato: ${PLACEHOLDER_PATTERN}"
-      echo "Sostituzione: ${REPLACEMENT_STRING}"
-      # Stampa il contenuto del file temporaneo per debug
-      echo "Contenuto file temporaneo (${TEMP_COMPOSE_FILE}):"
-      cat "${TEMP_COMPOSE_FILE}"
-      exit 1
-  fi
-  echo "File compose temporaneo modificato con successo." # Aggiunto per conferma
+  # --- ESPORTA LA VARIABILE D'AMBIENTE PER IL TAG ---
+  # Crea il nome della variabile dinamicamente (es. RDBMS_IMAGE_TAG)
+  typeset -u upper_modulo="${MODULO}" # Rende il nome del modulo maiuscolo (bash/ksh/zsh)
+  # Alternativa POSIX: upper_modulo=$(echo "$MODULO" | tr '[:lower:]' '[:upper:]')
+  local DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
+  export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
+  echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}" # Verifica
 
-  # Vai alla directory docker ed esegui docker-compose con i file ENV appropriati
+  # Vai alla directory docker
   cd "$BASE_DIR/docker"
-
-  # Stop e rimuovi il container se esiste (invariato)
-  # Usare il nome container definito nel compose file se diverso da auxdromos-${MODULO}
-  local CONTAINER_NAME="auxdromos-${MODULO}" # Assicurati sia il nome corretto
-  echo "Stop e rimozione container esistente ${CONTAINER_NAME}..."
-  docker stop ${CONTAINER_NAME} >/dev/null 2>&1 || true
-  docker rm ${CONTAINER_NAME} >/dev/null 2>&1 || true
-
-  # Rimuovi l'immagine vecchia localmente per forzare il pull della nuova (opzionale ma consigliato)
-  echo "Rimozione immagine locale precedente (se esiste) per forzare il pull..."
-  docker image rm ${PLACEHOLDER_IMAGE} >/dev/null 2>&1 || true # Rimuove l'eventuale immagine :latest locale
-  docker image rm $(docker images -q ${FULL_REPO_BASE}/${REPO_NAME} | grep -v ${LATEST_TAG}) >/dev/null 2>&1 || true # Rimuove vecchie versioni locali
 
   # Ottieni il nome della directory che contiene il docker-compose.yml originale
   local COMPOSE_DIR=$(dirname "${COMPOSE_FILE_ORIGINAL}")
@@ -347,35 +286,49 @@ deploy_module() {
   local PROJECT_NAME=$(basename "${COMPOSE_DIR}")
   echo "Utilizzo il nome progetto Docker Compose: ${PROJECT_NAME}"
 
+  # Stop e rimuovi il container se esiste
+  local CONTAINER_NAME="auxdromos-${MODULO}" # Assicurati sia il nome corretto
+  echo "Stop e rimozione container esistente ${CONTAINER_NAME}..."
+  # Usa il file compose originale per stop e rm
+  docker-compose -p "${PROJECT_NAME}" --file "${COMPOSE_FILE_ORIGINAL}" stop $MODULO >/dev/null 2>&1 || echo "Container $MODULO non in esecuzione o già fermato."
+  docker-compose -p "${PROJECT_NAME}" --file "${COMPOSE_FILE_ORIGINAL}" rm -f $MODULO >/dev/null 2>&1 || echo "Container $MODULO non trovato per la rimozione."
+
+  # Rimuovi l'immagine vecchia localmente per forzare il pull della nuova
+  echo "Rimozione immagine locale precedente (se esiste) per forzare il pull..."
+  # Rimuove l'immagine specifica con il tag trovato
+  docker image rm ${IMAGE_NAME_WITH_TAG} >/dev/null 2>&1 || echo "Immagine locale ${IMAGE_NAME_WITH_TAG} non trovata o già rimossa."
+  # Rimuove anche l'eventuale immagine :latest locale per sicurezza
+  docker image rm ${FULL_REPO_BASE}/${REPO_NAME}:latest >/dev/null 2>&1 || true
+
+
   echo "Avvio container ${CONTAINER_NAME} con docker-compose..."
-  # Esegui docker-compose per il modulo specifico usando il file TEMPORANEO
+  # Esegui docker-compose per il modulo specifico usando il file ORIGINALE
+  # Docker Compose userutomaticamente la variabile d'ambiente esportata (es. RDBMS_IMAGE_TAG)
   docker-compose -p "${PROJECT_NAME}" \
-                 --file "${TEMP_COMPOSE_FILE}" \
+                 --file "${COMPOSE_FILE_ORIGINAL}" \
                  --env-file "$BASE_DIR/env/${MODULO}.env" \
                  --env-file "$BASE_DIR/env/deploy.env" \
                  up -d $MODULO
 
-  # Verifica se il container è stato avviato correttamente (invariato)
+  # Verifica se il container è stato avviato correttamente
   if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
       echo "Container ${CONTAINER_NAME} avviato con successo."
-      # ... (attesa e stampa log come prima) ...
       echo "Attendi 10 secondi per l'inizializzazione..."
       sleep 10
       echo "=== Prime righe di log del servizio ${MODULO} ==="
       docker logs --tail 20 ${CONTAINER_NAME}
       echo "=========================================="
       echo "=== Deploy di $MODULO (tag: ${LATEST_TAG}) completato con successo $(date) ==="
-      exit 0
+      # Non usare exit 0 qui se questa funzione è chiamata da deploy_all
+      return 0
   else
       echo "Errore nell'avvio del container ${CONTAINER_NAME}."
       echo "=== Deploy di $MODULO (tag: ${LATEST_TAG}) fallito $(date) ==="
-      # ... (stampa log errore come prima) ...
       echo "Ultime righe di log del container (se disponibili):"
       docker logs --tail 50 ${CONTAINER_NAME} 2>/dev/null || echo "Nessun log disponibile"
-      exit 1
+      # Non usare exit 1 qui se questa funzione è chiamata da deploy_all
+      return 1 # Ritorna un codice di errore per indicare fallimento
   fi
-
-  # Il trap pulirà automaticamente il file temporaneo all'uscita
 }
 
 # Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
