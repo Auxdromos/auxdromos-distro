@@ -225,27 +225,27 @@ deploy_module() {
   fi
 
   # --- SEZIONE GESTIONE MODULO CONFIG (invariata) ---
-  if [[ "$MODULO" != "config" ]]; then
-    if ! docker ps --format '{{.Names}}' | grep -q "^auxdromos-config$"; then # Controllo più preciso del nome container
-      echo "Modulo 'config' non avviato. Avvio in corso..."
-      deploy_module "config" # Chiamata ricorsiva
-      local config_start_status=$?
-      if [ $config_start_status -ne 0 ]; then
-         echo "Errore: Fallito l'avvio del modulo 'config'. Deploy di $MODULO interrotto."
-         exit 1
-      fi
-      if ! docker ps --format '{{.Names}}' | grep -q "^auxdromos-config$"; then
-        echo "Errore: Impossibile avviare il modulo 'config' anche dopo il tentativo. Deploy di $MODULO interrotto."
-        exit 1
-      fi
-      echo "Attendi 15 secondi per l'inizializzazione di config..."
-      sleep 15
-      echo "=== Prime righe di log del servizio config ==="
-      docker logs --tail 20 auxdromos-config # Corretto typo auxdromos-congig -> auxdromos-config
-      echo "=========================================="
-      echo "=== Deploy di config completato con successo $(date) ==="
-    fi
-  fi
+#  if [[ "$MODULO" != "config" ]]; then
+#    if ! docker ps --format '{{.Names}}' | grep -q "^auxdromos-config$"; then # Controllo più preciso del nome container
+#      echo "Modulo 'config' non avviato. Avvio in corso..."
+#      deploy_module "config" # Chiamata ricorsiva
+#      local config_start_status=$?
+#      if [ $config_start_status -ne 0 ]; then
+#         echo "Errore: Fallito l'avvio del modulo 'config'. Deploy di $MODULO interrotto."
+#         exit 1
+#      fi
+#      if ! docker ps --format '{{.Names}}' | grep -q "^auxdromos-config$"; then
+#        echo "Errore: Impossibile avviare il modulo 'config' anche dopo il tentativo. Deploy di $MODULO interrotto."
+#        exit 1
+#      fi
+#      echo "Attendi 15 secondi per l'inizializzazione di config..."
+#      sleep 15
+#      echo "=== Prime righe di log del servizio config ==="
+#      docker logs --tail 20 auxdromos-config # Corretto typo auxdromos-congig -> auxdromos-config
+#      echo "=========================================="
+#      echo "=== Deploy di config completato con successo $(date) ==="
+#    fi
+#  fi
   # --- FINE SEZIONE GESTIONE MODULO CONFIG ---
 
 
@@ -365,6 +365,7 @@ deploy_module() {
       docker logs --tail 20 ${CONTAINER_NAME}
       echo "=========================================="
       echo "=== Deploy di $MODULO (tag: ${LATEST_TAG}) completato con successo $(date) ==="
+      exit 0
   else
       echo "Errore nell'avvio del container ${CONTAINER_NAME}."
       echo "=== Deploy di $MODULO (tag: ${LATEST_TAG}) fallito $(date) ==="
@@ -386,7 +387,7 @@ deploy_all() {
     deploy_module "$module"
 
     # Attendi tra i deploy per assicurarti che i servizi siano pronti
-    sleep 5
+    sleep 15
   done
 }
 

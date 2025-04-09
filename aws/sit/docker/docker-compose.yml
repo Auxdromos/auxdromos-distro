@@ -20,6 +20,7 @@ services:
       - BPL_JVM_HEAD_ROOM=0
     networks:
       - auxdromos-network
+    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -47,6 +48,7 @@ services:
       resources:
         limits:
           memory: 768M
+    restart: unless-stopped
     networks:
       - auxdromos-network
     logging:
@@ -84,7 +86,7 @@ services:
         reservations:
           memory: 1G
     command: start-dev
-    restart: on-failure
+    restart: unless-stopped
     networks:
       - auxdromos-network
     logging:
