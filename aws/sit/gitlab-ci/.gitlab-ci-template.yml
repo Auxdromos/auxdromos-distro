@@ -34,8 +34,18 @@ extract_module_info:
   artifacts:
     reports:
       dotenv: module_info.env
-  # Nessuna regola specifica: viene eseguito sempre all'inizio se la pipeline parte.
-
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\//' # Push su feature/*
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "develop"'      # Push su develop
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == "main"'         # Push su main
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+      when: on_success
+    - when: never # Non eseguire per altri casi (se non specificato sopra)
 # --- Stage: check_version ---
 check_version:
   stage: check_version
@@ -49,26 +59,54 @@ check_version:
     set -o pipefail
     echo "Verifica della versione..."
     if [ -f module_info.env ]; then . module_info.env; fi
+
+    # --- ADD CHECK FOR EMPTY VARIABLES ---
+    # Exit early if the essential variables are missing
+    if [[ -z "$MODULE_NAME" ]] || [[ -z "$VERSION" ]]; then
+      echo "ERRORE: MODULE_NAME ('$MODULE_NAME') o VERSION ('$VERSION') sono vuote."
+      echo "Questo indica un problema nello stage 'extract_module_info'."
+      exit 1
+    fi
+    # --- END CHECK ---
+
     if [[ "$CI_COMMIT_REF_NAME" == "main" ]]; then
       if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
         echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
         exit 1
       fi
-      if aws ecr describe-images --repository-name auxdromos-$MODULE_NAME --image-ids imageTag=$VERSION --region $AWS_DEFAULT_REGION > /dev/null 2>&1; then
-        echo "Errore: La versione '$VERSION' è già presente su ECR."
-        exit 1
-      fi
-      echo "Versione valida per main. Procedo..."
-    elif [[ "$CI_COMMIT_REF_NAME" == "develop" ]]; then
-      # Per develop, controlliamo solo S3 (come faceva prima per i branch non-main)
-      DEVELOP_PATH="develop/${MODULE_NAME}/${VERSION}/"
-      FOUND=$(aws s3 ls "s3://${S3_BUCKET_NAME}/${DEVELOP_PATH}" 2>/dev/null | wc -l || echo 0)
-      echo "DEBUG FOUND = $FOUND per path ${DEVELOP_PATH}"
-      if [[ "$FOUND" -gt 0 ]]; then
-        echo "Versione già presente su S3 in develop. Interrompo la pipeline."
+      # Check ECR for existing image tag
+      echo "Controllo ECR per repository auxdromos-$MODULE_NAME e tag $VERSION..."
+      if aws ecr describe-images --repository-name "auxdromos-$MODULE_NAME" --image-ids imageTag="$VERSION" --region "$AWS_DEFAULT_REGION" > /dev/null 2>&1; then
+        echo "Errore: La versione '$VERSION'  gipresente su ECR per il modulo '$MODULE_NAME'."
         exit 1
       else
-        echo "Versione non presente su S3 in develop. Procedo..."
+          # Optional: Add check if repository exists at all if describe-images fails for other reasons
+          if ! aws ecr describe-repositories --repository-names "auxdromos-$MODULE_NAME" --region "$AWS_DEFAULT_REGION" > /dev/null 2>&1; then
+              echo "Nota: Repository ECR 'auxdromos-$MODULE_NAME' non esiste ancora (verrà creato nello stage docker)."
+          fi
+      fi
+      echo "Versione '$VERSION' valida per main. Procedo..."
+
+    elif [[ "$CI_COMMIT_REF_NAME" == "develop" ]]; then
+      # Per develop, controlliamo solo S3
+      DEVELOP_PATH="develop/${MODULE_NAME}/${VERSION}/"
+      S3_URI="s3://${S3_BUCKET_NAME}/${DEVELOP_PATH}"
+      echo "Controllo esistenza versione su S3 path: ${S3_URI}"
+
+      # --- IMPROVED FOUND CAPTURE ---
+      # List objects and count lines. wc -l outputs count + newline. tr removes whitespace/newline.
+      # If path doesn't exist or is empty, ls returns nothing, wc -l gives 0.
+      FOUND_COUNT=$(aws s3 ls "${S3_URI}" 2>/dev/null | wc -l | tr -d '[:space:]')
+      # --- END IMPROVED CAPTURE ---
+
+      echo "DEBUG FOUND_COUNT = $FOUND_COUNT" # Debug count
+
+      # Use the reliably captured count for comparison
+      if [[ "$FOUND_COUNT" -gt 0 ]]; then
+        echo "Versione '$VERSION' per modulo '$MODULE_NAME' già presente su S3 in develop (${S3_URI}). Interrompo la pipeline."
+        exit 1
+      else
+        echo "Versione '$VERSION' per modulo '$MODULE_NAME' non presente su S3 in develop. Procedo..."
       fi
     else
        # Per altri branch (es. feature), non eseguiamo questo check
