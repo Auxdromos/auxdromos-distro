@@ -46,6 +46,7 @@ extract_module_info:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (se non specificato sopra)
+
 # --- Stage: check_version ---
 check_version:
   stage: check_version
@@ -94,29 +95,42 @@ check_version:
       S3_URI="s3://${S3_BUCKET_NAME}/${DEVELOP_PATH}"
       echo "Controllo esistenza versione su S3 path: ${S3_URI}"
 
-      # --- DEBUGGING S3 LS OUTPUT ---
+      # --- EXECUTE AWS S3 LS COMMAND AND CAPTURE OUTPUT ---
       echo "DEBUG: Eseguendo aws s3 ls ${S3_URI}"
-      S3_LS_OUTPUT=$(aws s3 ls "${S3_URI}" 2>&1) # Cattura sia stdout che stderr
+      # Disabilita la gestione degli errori temporaneamente per catturare l'output
+      set +e
+      S3_LS_OUTPUT=$(aws s3 ls "${S3_URI}" 2>&1)
       S3_LS_EXIT_CODE=$?
-      echo "DEBUG: Codice uscita aws s3 ls: ${S3_LS_EXIT_CODE}"
-      echo "DEBUG: Output aws s3 ls:"
-      echo "${S3_LS_OUTPUT}"
-      echo "--- Fine Output aws s3 ls ---"
-      # --- END DEBUGGING ---
-
-      # --- IMPROVED FOUND CAPTURE (using captured output) ---
-      # Conta le righe dall'output catturato se il comando è riuscito
-      FOUND_COUNT="0" # Default a 0
+      # Riabilita la gestione degli errori
+      set -e
+      
+      # Inizializza FOUND_COUNT a 0
+      FOUND_COUNT="0"
+      
+      echo "DEBUG: Codice di uscita del comando aws s3 ls: ${S3_LS_EXIT_CODE}"
+      
+      # Interpreta il codice di uscita di aws s3 ls:
+      # 0 = successo (potrebbe avere contenuto o essere una directory vuota)
+      # 1 = errore (percorso non esistente o altro errore)
+      # 254 = directory S3 inesistente (comune per aws s3 ls)
       if [[ ${S3_LS_EXIT_CODE} -eq 0 ]]; then
-          FOUND_COUNT=$(echo "${S3_LS_OUTPUT}" | wc -l | tr -d '[:space:]')
+          # Rimuovi righe vuote prima di contare
+          FOUND_COUNT=$(echo "${S3_LS_OUTPUT}" | grep -v '^$' | wc -l | tr -d '[:space:]')
+          echo "DEBUG: Output del comando aws s3 ls:"
+          echo "${S3_LS_OUTPUT}"
+      elif [[ ${S3_LS_EXIT_CODE} -eq 254 ]] || [[ "${S3_LS_OUTPUT}" == *"NoSuchBucket"* ]] || [[ "${S3_LS_OUTPUT}" == *"NoSuchKey"* ]]; then
+          echo "DEBUG: Il percorso S3 '${S3_URI}' non esiste ancora (codice ${S3_LS_EXIT_CODE})."
+          FOUND_COUNT="0"
       else
           echo "AVVISO: aws s3 ls ha fallito (codice ${S3_LS_EXIT_CODE}), considero FOUND_COUNT=0."
-          # Potresti voler gestire diversamente errori specifici di s3 ls qui
+          echo "DEBUG: Output dell'errore:"
+          echo "${S3_LS_OUTPUT}"
       fi
-      # --- END IMPROVED CAPTURE ---
+      # --- END S3 LS EXECUTION AND CAPTURE ---
 
-      echo "DEBUG FOUND_COUNT = $FOUND_COUNT" # Debug count
-      # Use the reliably captured count for comparison
+      echo "DEBUG: FOUND_COUNT = $FOUND_COUNT" # Debug count
+      
+      # Verifica se la versione esiste già
       if [[ "$FOUND_COUNT" -gt 0 ]]; then
         echo "Versione '$VERSION' per modulo '$MODULE_NAME' già presente su S3 in develop (${S3_URI}). Interrompo la pipeline."
         exit 1
@@ -128,10 +142,6 @@ check_version:
        echo "Skipping version check for branch $CI_COMMIT_REF_NAME"
     fi
   rules:
-    - if: $CI_COMMIT_BRANCH == "develop"
-      when: on_success
-    - if: $CI_COMMIT_BRANCH == "main"
-      when: on_success
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
         == "develop"
       when: on_success
@@ -244,10 +254,6 @@ package_configs:
     paths:
       - dist/
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
-      when: on_success
-    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
-      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
@@ -287,10 +293,6 @@ build_docker:
         echo "Dockerfile non trovato per $MODULE_NAME, salto build e push Docker"
       fi
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
-      when: on_success
-    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
-      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
@@ -344,10 +346,6 @@ upload_to_s3:
       fi
     - aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_PATH}" --recursive
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
-      when: on_success
-    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
-      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
@@ -386,10 +384,6 @@ tag_latest:
     - echo "Tagging della versione $VERSION come 'latest' per $MODULE_NAME nel path $S3_PATH"
     - aws s3 cp latest.json "s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
-      when: on_success
-    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
-      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
@@ -437,10 +431,6 @@ cleanup_s3:
         echo "Ci sono $VERSION_COUNT versioni, non è necessaria alcuna pulizia (< 6)."
       fi
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop"' # Push su develop
-      when: on_success
-    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
-      when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
