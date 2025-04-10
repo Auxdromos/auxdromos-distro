@@ -265,10 +265,6 @@ deploy_module() {
   fi
   echo "Login Succeeded" # Aggiunto per coerenza con il log precedente
 
-
-  # --- RIMOSSA LA SEZIONE DI MODIFICA DEL FILE COMPOSE CON SED ---
-
-
   # --- ESPORTA LA VARIABILE D'AMBIENTE PER IL TAG ---
   # Crea il nome della variabile dinamicamente (es. RDBMS_IMAGE_TAG)
   typeset -u upper_modulo="${MODULO}" # Rende il nome del modulo maiuscolo (bash/ksh/zsh)

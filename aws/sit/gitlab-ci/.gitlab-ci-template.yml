@@ -41,9 +41,10 @@ extract_module_info:
       when: on_success
     - if: '$CI_COMMIT_BRANCH == "main"'         # Push su main
       when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (se non specificato sopra)
 
@@ -142,10 +143,7 @@ check_version:
        echo "Skipping version check for branch $CI_COMMIT_REF_NAME"
     fi
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
-        == "develop"
-      when: on_success
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
         == "main"
       when: on_success
     - when: never
@@ -177,14 +175,15 @@ build:
       - target/build-info.json
   rules:
     - if: '$CI_COMMIT_BRANCH =~ /^feature\//' # Push su feature/*
-      when: on_success
+    - when: on_success
     - if: '$CI_COMMIT_BRANCH == "develop"'      # Push su develop
-      when: on_success
+    - when: on_success
     - if: '$CI_COMMIT_BRANCH == "main"'         # Push su main
+    - when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi
 
@@ -206,9 +205,10 @@ test:
       when: on_success
     - if: '$CI_COMMIT_BRANCH == "main"'         # Push su main
       when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
       when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi
 
@@ -254,9 +254,8 @@ package_configs:
     paths:
       - dist/
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (es. push su feature)
 
@@ -293,9 +292,8 @@ build_docker:
         echo "Dockerfile non trovato per $MODULE_NAME, salto build e push Docker"
       fi
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (es. push su feature)
 
@@ -346,9 +344,8 @@ upload_to_s3:
       fi
     - aws s3 ls "s3://${S3_BUCKET_NAME}/${S3_PATH}" --recursive
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (es. push su feature)
 
@@ -384,9 +381,8 @@ tag_latest:
     - echo "Tagging della versione $VERSION come 'latest' per $MODULE_NAME nel path $S3_PATH"
     - aws s3 cp latest.json "s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (es. push su feature)
 
@@ -431,9 +427,8 @@ cleanup_s3:
         echo "Ci sono $VERSION_COUNT versioni, non è necessaria alcuna pulizia (< 6)."
       fi
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"' # MR verso develop
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /^Merge pull request|^Merge merge request/'
+    # MR verso main
       when: on_success
     - when: never # Non eseguire per altri casi (es. push su feature)
 
@@ -523,6 +518,7 @@ deploy_sit:
       fi
     - echo "Deployment completato per $MODULE_NAME."
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'    # Push su main
+    # Esegui solo quando viene fatto il merge effettivo su main (push su main)
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
       when: on_success
-    - when: never # Non eseguire per altri casi (es. push su feature/develop)
+    - when: never # Non eseguire in altri casi
