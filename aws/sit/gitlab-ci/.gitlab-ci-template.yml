@@ -427,8 +427,7 @@ cleanup_s3:
         echo "Ci sono $VERSION_COUNT versioni, non è necessaria alcuna pulizia (< 6)."
       fi
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main'
-    # MR verso main
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
       when: on_success
     - when: never # Non eseguire per altri casi (es. push su feature)
 
