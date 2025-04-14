@@ -352,27 +352,28 @@ jobs:
           fi
 
   upload_to_s3:
-    name: Upload Artifacts to S3 (Main Branch Only)
+    name: Upload Artifacts to S3
     runs-on: ubuntu-latest
-    needs: [extract_module_info, build, package_configs] # package_configs viene eseguito solo su main
-    # Esegui solo se il chiamante è su main
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    needs: [extract_module_info, build, package_configs]
+    # Esegui solo su push a main
+    if: github.ref_name == 'main' && github.event_name == 'push'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
     steps:
-      # Non serve checkout qui, usiamo solo artifacts scaricati
+      - name: Checkout code # Necessario se si accede a file non inclusi negli artifact
+        uses: actions/checkout@v4
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
-          path: artifacts/build # Scarica in una sottodirectory
+          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}
+          path: artifacts/build # Scarica in una sottodirectory per evitare conflitti
 
       - name: Download config package artifact
         uses: actions/download-artifact@v4
         with:
-          name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
+          name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}
           path: artifacts/package # Scarica in una sottodirectory
 
       - name: Configure AWS Credentials
@@ -388,8 +389,9 @@ jobs:
           # Determina il path S3 basato sul branch (solo main in questo caso)
           if [[ "${{ github.ref_name }}" == "main" ]]; then
             S3_PATH="${MODULE_NAME}/${VERSION}/"
-          else
-            # Questo non dovrebbe accadere a causa dell'if del job, ma per sicurezza
+          else # Logica per develop rimossa basandosi sulle rules GitLab
+               # Se necessario, ripristinare con:
+               # S3_PATH="develop/${MODULE_NAME}/${VERSION}/"
             echo "ERRORE: Upload S3 configurato solo per il branch 'main'."
             exit 1
           fi
@@ -401,7 +403,7 @@ jobs:
           JAR_COUNT=$(find artifacts/build -maxdepth 1 -name '*.jar' | wc -l)
           if [ "$JAR_COUNT" -gt 0 ]; then
             echo "Uploading JAR files..."
-            aws s3 cp artifacts/build/ "${S3_URI}" --recursive --exclude "*" --include "*.jar"
+            aws s3 cp artifacts/build/ "s3://${S3_BUCKET_NAME}/${S3_PATH}" --recursive --exclude "*" --include "*.jar"
           else
             echo "Nessun file JAR trovato in artifacts/build/"
           fi
@@ -424,24 +426,14 @@ jobs:
             echo "Uploading ZIP file $ZIP_FILE..."
             aws s3 cp "$ZIP_FILE" "${S3_URI}$MODULE_NAME-$VERSION.zip"
           else
-            # Se il ZIP è vuoto (generato in package_configs), l'upload fallirà qui.
-            # Potresti voler gestire questo caso diversamente, es. non caricare ZIP vuoti.
-            echo "ERRORE: Il file ZIP $ZIP_FILE non esiste o è vuoto. Correggi il job package_configs o la logica di upload."
-            # exit 1 # Decidi se fallire o meno
-          fi
-
-          # Upload manifest.json dal pacchetto config
-          MANIFEST_FILE="artifacts/package/manifest.json"
-          if [ -f "$MANIFEST_FILE" ]; then
-             echo "Uploading manifest file $MANIFEST_FILE..."
-             aws s3 cp "$MANIFEST_FILE" "${S3_URI}manifest.json"
-          else
-             echo "ERRORE: Il file manifest $MANIFEST_FILE non esiste."
-             exit 1
+            echo "ERRORE: Il file ZIP $ZIP_FILE non esiste. Correggi il job package_configs."
+            exit 1
           fi
 
           echo "Verifica upload:"
           aws s3 ls "${S3_URI}" --recursive
+
+
 
   tag_latest:
     name: Tag Latest Version in S3 (Main Branch Only)
