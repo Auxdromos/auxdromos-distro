@@ -215,8 +215,9 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
+          # Assicurati che il nome corrisponda a quello dell'upload
           name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
-          path: target # Scarica nella directory target
+          path: artifacts/build # Scarica in una sottodirectory per evitare conflitti
 
       - name: Run Tests with Maven
         run: |
@@ -302,11 +303,12 @@ jobs:
       - name: Checkout calling repository code
         uses: actions/checkout@v4
 
-      - name: Download build artifacts (JARs needed for Docker build)
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
+          # Assicurati che il nome corrisponda a quello dell'upload
           name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
-          path: target # Scarica nella directory target
+          path: artifacts/build # Scarica in una sottodirectory per evitare conflitti
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -379,13 +381,15 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}
+          # Assicurati che il nome corrisponda a quello dell'upload
+          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
           path: artifacts/build # Scarica in una sottodirectory per evitare conflitti
 
       - name: Download config package artifact
         uses: actions/download-artifact@v4
         with:
-          name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}
+          # Assicurati che il nome corrisponda a quello dell'upload
+          name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
           path: artifacts/package # Scarica in una sottodirectory
 
       - name: Configure AWS Credentials via OIDC
