@@ -537,30 +537,33 @@ jobs:
           echo "Pulizia S3 per $S3_BASE_PATH, mantenendo solo le ultime $KEEP_LATEST versioni..."
           echo "Elenco contenuti in ${S3_URI_BASE}"
 
-          # Estrai i prefissi con AWS CLI e awk
-          RAW_PREFIXES=$(aws s3api list-objects-v2 --bucket "${S3_BUCKET_NAME}" --prefix "${S3_BASE_PATH}" --delimiter '/' --query 'CommonPrefixes[?contains(Prefix, `.`)] | sort_by(@, &Prefix)' --output text | awk '{print $2}')
+          # --- MODIFICA QUESTA RIGA ---
+          # Estrai TUTTI i prefissi comuni direttamente sotto S3_BASE_PATH
+          RAW_PREFIXES=$(aws s3api list-objects-v2 --bucket "${S3_BUCKET_NAME}" --prefix "${S3_BASE_PATH}" --delimiter '/' --query 'CommonPrefixes[].Prefix' --output text)
+          # ---------------------------
 
           echo "Prefissi grezzi trovati:"
-          echo "$RAW_PREFIXES"
+          echo "$RAW_PREFIXES" # Ora dovrebbe mostrare distro/1.67/ distro/1.70/ etc.
 
-          # Pulisci i prefissi usando due comandi sed separati
+          # Pulisci i prefissi (questo dovrebbe funzionare ancora)
           VERSIONS=$(echo "$RAW_PREFIXES" | sed "s#${S3_BASE_PATH}##" | sed 's#/$##')
 
           echo "Versioni trovate (candidate):"
-          echo "$VERSIONS"
-          
+          echo "$VERSIONS" # Ora dovrebbe mostrare 1.67 1.70 etc.
+
           VALID_VERSIONS=""
           VERSION_COUNT=0
-          
+
           if [[ -n "$VERSIONS" ]]; then
-          # Filtra e conta solo se ci sono versioni candidate
-          VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$' || true) # Aggiunto || true per non fallire se grep non trova nulla
-          VERSION_COUNT=$(echo "$VALID_VERSIONS" | grep -cv '^$' || true) # Già corretto con || true
+            # Filtra e conta solo se ci sono versioni candidate
+            # Questo grep ora farà il lavoro di validazione che prima faceva in parte la query AWS
+            VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$' || true)
+            VERSION_COUNT=$(echo "$VALID_VERSIONS" | grep -cv '^$' || true)
           fi
-          
+
           echo "Versioni valide filtrate:"
-          echo "$VALID_VERSIONS"
-          echo "Numero di versioni valide: $VERSION_COUNT"
+          echo "$VALID_VERSIONS" # Dovrebbe mostrare le versioni valide
+          echo "Numero di versioni valide: $VERSION_COUNT" # Dovrebbe essere > 0
           
           if [[ $VERSION_COUNT -gt $KEEP_LATEST ]]; then
             TO_DELETE=$(($VERSION_COUNT - $KEEP_LATEST))
