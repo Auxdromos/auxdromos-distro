@@ -107,7 +107,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
           aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Run Version Check Script
@@ -311,7 +311,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
           aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Login to Amazon ECR
@@ -391,7 +391,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
           aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Upload to S3
@@ -464,7 +464,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
           aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Create and Upload latest.json
@@ -513,7 +513,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
           aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Run S3 Cleanup Script
@@ -589,7 +589,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
           aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Setup SSH Agent
