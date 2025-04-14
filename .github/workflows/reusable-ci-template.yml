@@ -1,0 +1,693 @@
+# .github/workflows/reusable-ci-template.yml
+# Workflow riutilizzabile per build, test, package, deploy di moduli AuxDromos
+name: Reusable AuxDromos CI/CD
+
+on:
+  workflow_call:
+    # Definisci gli input che il workflow chiamante può passare
+    inputs:
+      # Non serve passare module-name, viene estratto dal pom.xml del chiamante
+      java-version:
+        description: 'Versione JDK da usare'
+        required: false
+        type: string
+        default: '17'
+      # Aggiungi altri input se necessario (es. profili maven specifici)
+
+    # Definisci i segreti che il workflow chiamante DEVE passare
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_DEFAULT_REGION:
+        required: true
+      S3_BUCKET_NAME:
+        required: true
+      AWS_ACCOUNT_ID:
+        required: true
+      EC2_USER:
+        required: true
+      EC2_HOST:
+        required: true
+      EC2_PRIVATE_KEY:
+        required: true
+      # BUILD_ARGS: # Opzionale, se usato nel build docker
+      #   required: false
+
+# Le variabili d'ambiente globali usano i segreti passati
+# Nota: Non definire qui variabili che dipendono da output di job (MODULE_NAME, VERSION)
+env:
+  AWS_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  EC2_USER: ${{ secrets.EC2_USER }}
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+
+jobs:
+  extract_module_info:
+    name: Prepare - Extract Module Info
+    runs-on: ubuntu-latest
+    outputs:
+      module_name: ${{ steps.extract.outputs.MODULE_NAME }}
+      version: ${{ steps.extract.outputs.VERSION }}
+    steps:
+      # Questo checkout prende il codice del REPOSITORY CHIAMANTE
+      - name: Checkout calling repository code
+        uses: actions/checkout@v4
+
+      - name: Extract Info from pom.xml
+        id: extract
+        run: |
+          echo "Estrazione delle informazioni dal pom.xml del repository chiamante..."
+          if [ -f "pom.xml" ]; then
+            # Usa xmlstarlet se disponibile per un parsing più robusto, altrimenti fallback a grep/sed
+            if command -v xmlstarlet &> /dev/null; then
+               echo "Usando xmlstarlet..."
+               # Fallback a grep/sed per ora per evitare dipendenze aggiuntive
+               MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+               VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+            else
+               echo "xmlstarlet non trovato, usando grep/sed..."
+               MODULE_NAME=$(grep "<artifactId>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+               VERSION=$(grep "<version>" pom.xml | head -1 | sed 's/[<>]/|/g' | cut -d'|' -f3)
+            fi
+          else
+            echo "ATTENZIONE: pom.xml non trovato nel repository chiamante."
+            MODULE_NAME=${{ github.repository_owner }}-${{ github.repository }} # Nome repo come fallback
+            MODULE_NAME=$(basename $MODULE_NAME) # Prendi solo il nome del repo
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            VERSION="1.0.0-${SHORT_SHA}" # Versione di fallback
+          fi
+
+          if [[ -z "$MODULE_NAME" ]] || [[ -z "$VERSION" ]]; then
+             echo "ERRORE: Impossibile estrarre MODULE_NAME o VERSION."
+             exit 1
+          fi
+
+          echo "Modulo $MODULE_NAME, Versione $VERSION"
+          echo "MODULE_NAME=$MODULE_NAME" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+  check_version:
+    name: Check Version Existence (Main Branch Only)
+    runs-on: ubuntu-latest
+    needs: extract_module_info
+    # Esegui questo controllo solo se il workflow CHIAMANTE è stato triggerato da un push su 'main'
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }} # Usa la variabile globale definita sopra
+
+      - name: Run Version Check Script
+        run: |
+          set -e
+          set -o pipefail
+          echo "Verifica della versione per il branch 'main'..."
+
+          if [[ -z "$MODULE_NAME" ]] || [[ -z "$VERSION" ]]; then
+            echo "ERRORE: MODULE_NAME ('$MODULE_NAME') o VERSION ('$VERSION') sono vuote."
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
+            echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
+            exit 1
+          fi
+
+          # Check ECR (Assumendo che il nome repo ECR segua il pattern auxdromos-<module_name>)
+          ECR_REPO_NAME="auxdromos-$MODULE_NAME"
+          echo "Controllo ECR per repository $ECR_REPO_NAME e tag $VERSION..."
+          if aws ecr describe-images --repository-name "$ECR_REPO_NAME" --image-ids imageTag="$VERSION" --region "$AWS_REGION" > /dev/null 2>&1; then
+            echo "Errore: La versione '$VERSION' è già presente su ECR per il modulo '$MODULE_NAME'."
+            exit 1
+          else
+              # Optional: Check if repository exists
+              if ! aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION" > /dev/null 2>&1; then
+                  echo "Nota: Repository ECR '$ECR_REPO_NAME' non esiste ancora (verrà creato nel job docker)."
+              fi
+              echo "Versione '$VERSION' valida per main. Procedo..."
+          fi
+
+  build:
+    name: Build Project
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, check_version]
+    # Non serve 'if' qui, il chiamante decide quando eseguire il workflow
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    steps:
+      # Checkout del codice del chiamante
+      - name: Checkout calling repository code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java-version }} # Usa l'input passato
+          distribution: 'corretto'
+          cache: 'maven'
+
+      - name: Build with Maven
+        run: |
+          echo "Build del modulo $MODULE_NAME versione $VERSION..."
+          # Considera di passare profili o opzioni come input se necessario
+          mvn clean package -Psit -DskipTests
+
+      - name: Create Build Info
+        run: |
+          mkdir -p target # Assicurati che la directory target esista
+          cat > target/build-info.json <<EOF
+          {
+            "moduleName": "$MODULE_NAME",
+            "version": "$VERSION",
+            "buildDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "branch": "${{ github.ref_name }}", # Branch del chiamante
+            "commitHash": "${{ github.sha }}"  # Commit del chiamante
+          }
+          EOF
+          echo "Contenuto build-info.json:"
+          cat target/build-info.json
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # Nome univoco per evitare collisioni se più workflow usano questo template nello stesso run
+          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
+          path: |
+            target/*.jar
+            target/distribution/
+            target/build-info.json
+          if-no-files-found: error # Fallisce se non trova i file
+
+  test:
+    name: Test Project
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, build]
+    # Non serve 'if' qui
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    steps:
+      # Checkout del codice del chiamante
+      - name: Checkout calling repository code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'corretto'
+          cache: 'maven'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
+          path: target # Scarica nella directory target
+
+      - name: Run Tests with Maven
+        run: |
+          echo "Test del modulo $MODULE_NAME versione $VERSION..."
+          mvn test
+
+  package_configs:
+    name: Package Configuration Files (Main Branch Only)
+    runs-on: ubuntu-latest
+    needs: extract_module_info
+    # Esegui solo se il chiamante main
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    steps:
+      # Checkout del codice del chiamante
+      - name: Checkout calling repository code
+        uses: actions/checkout@v4
+
+      - name: Install zip
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Create Config Package
+        run: |
+          set -x
+          echo "Creazione pacchetto di configurazione $MODULE_NAME versione $VERSION..."
+          mkdir -p dist
+          FILES_TO_ZIP=""
+          # Cerca le directory standard nel repo chiamante
+          for DIR in aws docker scripts env; do
+            if [ -d "$DIR" ]; then
+              FILES_TO_ZIP="$FILES_TO_ZIP $DIR/"
+              echo "Aggiungo directory $DIR al ZIP"
+            fi
+          done
+          # Trova file di configurazione nella root del repo chiamante
+          find . -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' -o -name '*.properties' \) -print0 | while IFS= read -r -d $'\0' file; do
+              if [ -f "$file" ]; then
+                  BASENAME=$(basename "$file")
+                  FILES_TO_ZIP="$FILES_TO_ZIP $BASENAME"
+                  echo "Aggiungo file $BASENAME al ZIP"
+              fi
+          done
+
+          if [ -n "$FILES_TO_ZIP" ]; then
+            echo "Creazione ZIP con: $FILES_TO_ZIP"
+            zip -r "dist/$MODULE_NAME-$VERSION.zip" $FILES_TO_ZIP
+          else
+            echo "AVVISO: Nessun file/directory di configurazione standard trovato da includere nel ZIP, genero ZIP vuoto"
+            touch empty.txt
+            zip -r "dist/$MODULE_NAME-$VERSION.zip" empty.txt
+            rm empty.txt
+          fi
+          if [ -f "dist/$MODULE_NAME-$VERSION.zip" ]; then echo "File ZIP creato dist/$MODULE_NAME-$VERSION.zip"; else echo "ERRORE Il file ZIP non è stato creato"; exit 1; fi
+
+          # Crea manifest.json
+          echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"${{ github.ref_name }}\",\"commitHash\":\"${{ github.sha }}\"}" > dist/manifest.json
+
+      - name: Upload config package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+
+  build_docker:
+    name: Build and Push Docker Image (Main Branch Only)
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, build]
+    # Esegui solo se il chiamante è su main
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+      ECR_REPOSITORY: auxdromos-${{ needs.extract_module_info.outputs.module_name }} # Nome ECR basato sul modulo
+    steps:
+      # Checkout del codice del chiamante
+      - name: Checkout calling repository code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts (JARs needed for Docker build)
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
+          path: target # Scarica nella directory target
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check for Dockerfile and Build/Push
+        id: docker_build
+        run: |
+          # Cerca Dockerfile nel repo chiamante
+          if [ -f "Dockerfile" ]; then
+            echo "Dockerfile trovato per $MODULE_NAME, procedo con build e push"
+
+            # Create ECR repository if it doesn't exist
+            aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" > /dev/null 2>&1 || \
+              (echo "Repository ECR '${ECR_REPOSITORY}' non esiste, lo creo..." && \
+               aws ecr create-repository --repository-name "${ECR_REPOSITORY}" --region "${AWS_REGION}" && \
+               echo "Repository ECR creato con successo.") || \
+              (echo "Repository ECR '${ECR_REPOSITORY}' esiste già.")
+
+            ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+            IMAGE_TAG="${ECR_REGISTRY}/${ECR_REPOSITORY}:${VERSION}"
+
+            echo "Building image: ${IMAGE_TAG}"
+            # Passa eventuali build args definiti come secret/variable
+            DOCKER_BUILD_ARGS=""
+            # Usa secrets.BUILD_ARGS se definito nel chiamante e passato qui
+            # if [ -n "${{ secrets.BUILD_ARGS }}" ]; then
+            #   DOCKER_BUILD_ARGS="${{ secrets.BUILD_ARGS }}"
+            # fi
+
+            docker buildx build --push \
+              $DOCKER_BUILD_ARGS \
+              -t "${IMAGE_TAG}" \
+              --platform linux/amd64 . # Specifica la piattaforma se necessario
+
+            echo "Immagine Docker caricata con successo: ${IMAGE_TAG}"
+            echo "docker_image_pushed=true" >> $GITHUB_OUTPUT
+          else
+            echo "Dockerfile non trovato per $MODULE_NAME nel repository chiamante, salto build e push Docker"
+            echo "docker_image_pushed=false" >> $GITHUB_OUTPUT
+          fi
+
+  upload_to_s3:
+    name: Upload Artifacts to S3 (Main Branch Only)
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, build, package_configs] # package_configs viene eseguito solo su main
+    # Esegui solo se il chiamante è su main
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    steps:
+      # Non serve checkout qui, usiamo solo artifacts scaricati
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
+          path: artifacts/build # Scarica in una sottodirectory
+
+      - name: Download config package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
+          path: artifacts/package # Scarica in una sottodirectory
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload to S3
+        run: |
+          set -e
+          # Determina il path S3 basato sul branch (solo main in questo caso)
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            S3_PATH="${MODULE_NAME}/${VERSION}/"
+          else
+            # Questo non dovrebbe accadere a causa dell'if del job, ma per sicurezza
+            echo "ERRORE: Upload S3 configurato solo per il branch 'main'."
+            exit 1
+          fi
+
+          S3_URI="s3://${S3_BUCKET_NAME}/${S3_PATH}"
+          echo "Uploading artifacts for $MODULE_NAME version $VERSION into ${S3_URI}"
+
+          # Upload JARs
+          JAR_COUNT=$(find artifacts/build -maxdepth 1 -name '*.jar' | wc -l)
+          if [ "$JAR_COUNT" -gt 0 ]; then
+            echo "Uploading JAR files..."
+            aws s3 cp artifacts/build/ "${S3_URI}" --recursive --exclude "*" --include "*.jar"
+          else
+            echo "Nessun file JAR trovato in artifacts/build/"
+          fi
+
+          # Upload distribution
+          if [ -d "artifacts/build/distribution/" ]; then
+            echo "Uploading distribution files..."
+            aws s3 cp artifacts/build/distribution/ "${S3_URI}distribution/" --recursive
+          fi
+
+          # Upload build-info.json
+          if [ -f "artifacts/build/build-info.json" ]; then
+            echo "Uploading build-info..."
+            aws s3 cp artifacts/build/build-info.json "${S3_URI}build-info.json"
+          fi
+
+          # Upload config ZIP
+          ZIP_FILE="artifacts/package/$MODULE_NAME-$VERSION.zip"
+          if [ -f "$ZIP_FILE" ]; then
+            echo "Uploading ZIP file $ZIP_FILE..."
+            aws s3 cp "$ZIP_FILE" "${S3_URI}$MODULE_NAME-$VERSION.zip"
+          else
+            # Se il ZIP è vuoto (generato in package_configs), l'upload fallirà qui.
+            # Potresti voler gestire questo caso diversamente, es. non caricare ZIP vuoti.
+            echo "ERRORE: Il file ZIP $ZIP_FILE non esiste o è vuoto. Correggi il job package_configs o la logica di upload."
+            # exit 1 # Decidi se fallire o meno
+          fi
+
+          # Upload manifest.json dal pacchetto config
+          MANIFEST_FILE="artifacts/package/manifest.json"
+          if [ -f "$MANIFEST_FILE" ]; then
+             echo "Uploading manifest file $MANIFEST_FILE..."
+             aws s3 cp "$MANIFEST_FILE" "${S3_URI}manifest.json"
+          else
+             echo "ERRORE: Il file manifest $MANIFEST_FILE non esiste."
+             exit 1
+          fi
+
+          echo "Verifica upload:"
+          aws s3 ls "${S3_URI}" --recursive
+
+  tag_latest:
+    name: Tag Latest Version in S3 (Main Branch Only)
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, upload_to_s3] # Assicura che l'upload sia completo
+    # Esegui solo se il chiamante è su main
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create and Upload latest.json
+        run: |
+          set -e
+          # Determina il path S3 basato sul branch (solo main in questo caso)
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            LATEST_PATH="${MODULE_NAME}/latest.json"
+            S3_BASE_PATH="${MODULE_NAME}/"
+          else
+            echo "ERRORE: Tag Latest configurato solo per il branch 'main'."
+            exit 1
+          fi
+
+          S3_URI="s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
+
+          cat > latest.json <<EOF
+          {
+            "moduleName": "$MODULE_NAME",
+            "latestVersion": "$VERSION",
+            "updateDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "branch": "${{ github.ref_name }}",
+            "commitHash": "${{ github.sha }}"
+          }
+          EOF
+
+          echo "Tagging della versione $VERSION come 'latest' per $MODULE_NAME nel path $S3_BASE_PATH"
+          aws s3 cp latest.json "${S3_URI}"
+          echo "Contenuto di latest.json caricato:"
+          cat latest.json
+
+  cleanup_s3:
+    name: Cleanup Old S3 Versions (Main Branch Only)
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, tag_latest] # Esegui dopo aver taggato l'ultima versione
+    # Esegui solo se il chiamante è su main
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run S3 Cleanup Script
+        run: |
+          set -e
+          # Determina il path S3 basato sul branch (solo main in questo caso)
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            S3_BASE_PATH="${MODULE_NAME}/"
+          else
+            echo "ERRORE: Cleanup S3 configurato solo per il branch 'main'."
+            exit 1
+          fi
+
+          S3_URI_BASE="s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}"
+          KEEP_LATEST=5 # Numero di versioni da mantenere
+
+          echo "Pulizia S3 per $S3_BASE_PATH, mantenendo solo le ultime $KEEP_LATEST versioni..."
+          echo "Elenco contenuti in ${S3_URI_BASE}"
+
+          # Estrai i prefissi con AWS CLI e awk
+          RAW_PREFIXES=$(aws s3api list-objects-v2 --bucket "${S3_BUCKET_NAME}" --prefix "${S3_BASE_PATH}" --delimiter '/' --query 'CommonPrefixes[?contains(Prefix, `.`)] | sort_by(@, &Prefix)' --output text | awk '{print $2}')
+
+          echo "Prefissi grezzi trovati:"
+          echo "$RAW_PREFIXES"
+
+          # Pulisci i prefissi usando due comandi sed separati
+          VERSIONS=$(echo "$RAW_PREFIXES" | sed "s#${S3_BASE_PATH}##" | sed 's#/$##')
+
+          echo "Versioni trovate (candidate):"
+          echo "$VERSIONS"
+
+          # Filtra ulteriormente per assicurarsi che siano formati di versione validi (semplice check)
+          VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$')
+
+          echo "Versioni valide filtrate:"
+          echo "$VALID_VERSIONS"
+
+          # Conta le versioni valide in modo robusto
+          VERSION_COUNT=$(echo "$VALID_VERSIONS" | grep -cv '^$' || true) # Usa grep -c e || true per gestire 0 risultati
+          echo "Numero di versioni valide: $VERSION_COUNT"
+
+          if [[ $VERSION_COUNT -gt $KEEP_LATEST ]]; then
+            TO_DELETE=$(($VERSION_COUNT - $KEEP_LATEST))
+            echo "Rimozione delle $TO_DELETE versioni più vecchie..."
+            # Ordina semanticamente le versioni prima di selezionare le più vecchie con head
+            VERSIONS_TO_DELETE=$(echo "$VALID_VERSIONS" | sort -V | head -n $TO_DELETE)
+            echo "Versioni da eliminare:"
+            echo "$VERSIONS_TO_DELETE"
+            for OLD_VERSION in $VERSIONS_TO_DELETE; do
+              if [[ -n "$OLD_VERSION" ]]; then
+                echo "Rimozione versione $OLD_VERSION da S3 (${S3_URI_BASE}${OLD_VERSION}/)..."
+                aws s3 rm "${S3_URI_BASE}${OLD_VERSION}/" --recursive
+              fi
+            done
+          else
+            echo "Ci sono $VERSION_COUNT versioni valide, non è necessaria alcuna pulizia (< $((KEEP_LATEST + 1)))."
+          fi
+
+  deploy_sit:
+    name: Deploy to SIT Environment (Main Branch Only)
+    runs-on: ubuntu-latest
+    # Dipende da upload_to_s3 (che a sua volta dipende da package_configs solo su main)
+    # e da build_docker (che viene eseguito solo su main)
+    needs: [extract_module_info, upload_to_s3, build_docker]
+    # Esegui solo se il chiamante è su main
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    steps:
+      # Non serve checkout qui, lo script di deploy usa S3 o lo script deploy_module.sh già presente su EC2
+
+      - name: Configure AWS Credentials # Necessario per aws s3 cp se MODULE_NAME è 'distro'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_PRIVATE_KEY }} # Usa la chiave privata passata come segreto
+
+      - name: Add EC2 Host to Known Hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.EC2_HOST }} >> ~/.ssh/known_hosts # Usa la variabile globale
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy Script
+        run: |
+          set -e # Esce immediatamente se un comando fallisce
+          echo "Deploying module $MODULE_NAME, versione $VERSION to ${{ env.EC2_HOST }}"
+
+          # La logica qui assume che il modulo 'distro' sia speciale e contenga gli script di deploy
+          # per gli altri moduli.
+          if [ "$MODULE_NAME" = "distro" ]; then
+             echo "[Deploy] Modulo distro: scarico gli artifact da S3 e li carico su EC2..."
+             LOCAL_TARGET_PATH="/tmp/${MODULE_NAME}-${VERSION}/" # Usa versione nel path temporaneo
+             S3_SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+             REMOTE_APP_PATH="/app/${MODULE_NAME}"
+             REMOTE_ARTIFACT_PATH="${REMOTE_APP_PATH}/artifacts"
+
+             mkdir -p "${LOCAL_TARGET_PATH}" # Crea la directory locale
+
+             echo "[Deploy] Tentativo di download da: ${S3_SOURCE_PATH} a ${LOCAL_TARGET_PATH}"
+             # Esegui il download e controlla l'esito
+             aws s3 cp "${S3_SOURCE_PATH}" "${LOCAL_TARGET_PATH}" --recursive
+             if [ $? -ne 0 ]; then
+               echo "[Deploy] ERRORE: Download da S3 fallito (codice di uscita $?)."
+               exit 1
+             fi
+
+             echo "[Deploy] Download da S3 completato. Verifico contenuto locale in ${LOCAL_TARGET_PATH}:"
+             ls -lR "${LOCAL_TARGET_PATH}"
+
+             if [ -z "$(ls -A ${LOCAL_TARGET_PATH})" ]; then
+                echo "[Deploy] ERRORE: La directory ${LOCAL_TARGET_PATH} è vuota dopo il download da S3."
+                echo "[Deploy] Verifica che il percorso S3 '${S3_SOURCE_PATH}' contenga file."
+                exit 1
+             fi
+
+             echo "[Deploy] Eseguo comandi remoti su ${EC2_USER}@${EC2_HOST}..."
+             # Usare env vars globali per EC2_USER e EC2_HOST
+             ssh ${EC2_USER}@${EC2_HOST} "
+               set -e
+               echo '[Deploy Remote] Pulisco i vecchi artifact su EC2...'
+               sudo rm -rf ${REMOTE_ARTIFACT_PATH}/*
+               echo '[Deploy Remote] Creo la directory target su EC2 (${REMOTE_ARTIFACT_PATH})...'
+               sudo mkdir -p ${REMOTE_ARTIFACT_PATH}
+               sudo chown -R ${EC2_USER}:${EC2_USER} ${REMOTE_APP_PATH}
+             "
+             echo "[Deploy] Copio i nuovi file dalla macchina locale (${LOCAL_TARGET_PATH}) all'EC2 (${REMOTE_ARTIFACT_PATH}/)..."
+             scp -r ${LOCAL_TARGET_PATH}* ${EC2_USER}@${EC2_HOST}:${REMOTE_ARTIFACT_PATH}/
+
+             echo "[Deploy] Verifico la presenza del file ZIP e inizio l'estrazione su EC2..."
+             ssh ${EC2_USER}@${EC2_HOST} "
+               set -e
+               cd ${REMOTE_ARTIFACT_PATH}
+               ZIP_FILE=\"${MODULE_NAME}-${VERSION}.zip\"
+               if ls \$ZIP_FILE >/dev/null 2>&1; then
+                 echo '[Deploy Remote] ZIP file trovato. Inizio estrazione...'
+                 # Assicurati che unzip sia installato: sudo apt-get update && sudo apt-get install -y unzip
+                 unzip -o \$ZIP_FILE || { echo '[Deploy Remote] ERRORE: unzip fallito.'; exit 1; }
+                 echo '[Deploy Remote] Rinomino ZIP in ${MODULE_NAME}-last.zip'
+                 mv \$ZIP_FILE ${MODULE_NAME}-last.zip
+               else
+                 echo '[Deploy Remote] ERRORE: File ZIP \$ZIP_FILE non trovato in ${REMOTE_ARTIFACT_PATH}.'
+                 ls -la ${REMOTE_ARTIFACT_PATH} # Mostra contenuto per debug
+                 exit 1
+               fi
+               echo '[Deploy Remote] Imposto la versione corrente come distro-last'
+               echo 'distro-last' | sudo tee ${REMOTE_APP_PATH}/current-version.txt > /dev/null
+             "
+             echo "[Deploy] Deploy per il modulo distro completato."
+
+          else
+             # Logica per moduli non-distro
+             echo "[Deploy] Modulo $MODULE_NAME (non-distro): uso lo script deploy_module.sh presente nei file distro."
+             REMOTE_APP_PATH="/app/${MODULE_NAME}"
+             # Assumiamo che lo script di deploy sia sempre in questo path relativo al modulo 'distro'
+             REMOTE_DISTRO_SCRIPT_PATH="/app/distro/artifacts/aws/sit/script/deploy_module.sh"
+
+             ssh ${EC2_USER}@${EC2_HOST} "
+               set -e
+               echo '[Deploy Remote] Assicuro esistenza directory ${REMOTE_APP_PATH}'
+               sudo mkdir -p ${REMOTE_APP_PATH}
+               sudo chown -R ${EC2_USER}:${EC2_USER} ${REMOTE_APP_PATH}
+
+               if [ -f ${REMOTE_DISTRO_SCRIPT_PATH} ]; then
+                 echo '[Deploy Remote] Trovato deploy_module.sh in ${REMOTE_DISTRO_SCRIPT_PATH}'
+                 # Non è chiaro da dove debba essere eseguito lo script, assumiamo dalla root o da /app/distro/artifacts
+                 # cd /app/distro/artifacts # Potrebbe essere necessario
+                 # Assicurati che lo script sia eseguibile
+                 sudo chmod +x ${REMOTE_DISTRO_SCRIPT_PATH}
+                 echo '[Deploy Remote] Eseguo: ${REMOTE_DISTRO_SCRIPT_PATH} ${MODULE_NAME}'
+                 # Esegui lo script. Potrebbe richiedere sudo a seconda di cosa fa.
+                 # Potrebbe essere necessario passare la versione o altri parametri?
+                 ${REMOTE_DISTRO_SCRIPT_PATH} ${MODULE_NAME} ${VERSION} # Aggiunto VERSION come possibile parametro
+               else
+                 echo '[Deploy Remote] ERRORE: deploy_module.sh non trovato in ${REMOTE_DISTRO_SCRIPT_PATH}'
+                 exit 1
+               fi
+             "
+             echo "[Deploy] Deploy per il modulo $MODULE_NAME completato."
+          fi
+          echo "Deployment completato per $MODULE_NAME."
