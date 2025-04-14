@@ -17,11 +17,9 @@ jobs:
   call-reusable-pipeline:
     name: Run Shared AuxDromos CI/CD
     # Specifica il percorso del workflow riutilizzabile nello stesso repository 'distro'
-    # USA UN TAG O COMMIT SHA SPECIFICO IN PRODUZIONE invece di @main!
-    # Esempio: uses: ./.github/workflows/reusable-ci-template.yml@v1.0.0
-    # Oppure: uses: auxdromos/auxdromos-distro/.github/workflows/reusable-ci-template.yml@v1.0.0
-    uses: ./.github/workflows/reusable-ci-template.yml@main # Usa path relativo per lo stesso repo
-
+    # Quando si usa un path locale, NON si specifica la versione (@main, @tag, @sha)
+    # GitHub usa automaticamente la versione dello stesso commit.
+    uses: ./.github/workflows/reusable-ci-template.yml # Rimuovi @main
     # Passa gli input richiesti (se ce ne sono oltre ai default)
     with:
       java-version: '17' # Puoi omettere se '17' è il default desiderato
