@@ -20,6 +20,13 @@ jobs:
     # Quando si usa un path locale, NON si specifica la versione (@main, @tag, @sha)
     # GitHub usa automaticamente la versione dello stesso commit.
     uses: ./.github/workflows/reusable-ci-template.yml # Rimuovi @main
+
+    # --- AGGIUNGI QUESTO BLOCCO ---
+    permissions:
+      id-token: write   # Permette al job di richiedere un token OIDC
+      contents: read    # Permesso standard per checkout, ecc.
+    # -----------------------------
+
     # Passa gli input richiesti (se ce ne sono oltre ai default)
     with:
       java-version: '17' # Puoi omettere se '17' è il default desiderato
