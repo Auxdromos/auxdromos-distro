@@ -539,25 +539,27 @@ jobs:
 
           # --- MODIFICA QUESTA RIGA ---
           # Estrai TUTTI i prefissi comuni direttamente sotto S3_BASE_PATH
+          # Estrai TUTTI i prefissi comuni direttamente sotto S3_BASE_PATH
           RAW_PREFIXES=$(aws s3api list-objects-v2 --bucket "${S3_BUCKET_NAME}" --prefix "${S3_BASE_PATH}" --delimiter '/' --query 'CommonPrefixes[].Prefix' --output text)
-          # ---------------------------
 
           echo "Prefissi grezzi trovati:"
-          echo "$RAW_PREFIXES" # Ora dovrebbe mostrare distro/1.67/ distro/1.70/ etc.
+          echo "$RAW_PREFIXES"
 
-          # Pulisci i prefissi (questo dovrebbe funzionare ancora)
-          VERSIONS=$(echo "$RAW_PREFIXES" | sed "s#${S3_BASE_PATH}##" | sed 's#/$##')
+          # --- MODIFICA QUESTA PARTE ---
+          # Processa ogni prefisso su una riga separata
+          VERSIONS=$(echo "$RAW_PREFIXES" | tr ' ' '\n' | sed "s#^${S3_BASE_PATH}##" | sed 's#/$##')
+          # ---------------------------
 
           echo "Versioni trovate (candidate):"
-          echo "$VERSIONS" # Ora dovrebbe mostrare 1.67 1.70 etc.
+          echo "$VERSIONS" # Ora dovrebbe mostrare 1.67, 1.70, ..., latest su righe separate
 
           VALID_VERSIONS=""
           VERSION_COUNT=0
 
           if [[ -n "$VERSIONS" ]]; then
             # Filtra e conta solo se ci sono versioni candidate
-            # Questo grep ora farà il lavoro di validazione che prima faceva in parte la query AWS
-            VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$' || true)
+            # Aggiungi un grep -v per escludere esplicitamente 'latest' o altri non-versioni
+            VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$' | grep -v '^latest$' || true)
             VERSION_COUNT=$(echo "$VALID_VERSIONS" | grep -cv '^$' || true)
           fi
 
