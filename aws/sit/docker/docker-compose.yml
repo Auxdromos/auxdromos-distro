@@ -1,32 +1,41 @@
+version: '3.8'
+
+# Docker Compose file for AuxDromos SIT environment
+# Uses environment variables from AWS Systems Manager Parameter Store
+
 services:
   config:
     image: hyness/spring-cloud-config-server
     container_name: auxdromos-config
-    env_file:
-      - ../env/config.env
     ports:
-      - 8888:8888
+      # Uses environment variables exported by the script, with defaults for safety
+      - "${EXTERNAL_PORT:-8888}:${INTERNAL_PORT:-8888}"
     environment:
-      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=https://gitlab.com/auxdromos/auxdromos-configuration.git
+      # Git configuration
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=${SPRING_CLOUD_CONFIG_SERVER_GIT_URI}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=${SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=${SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL=${SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS=${SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS}
+      # Fixed values
       - SPRING_CLOUD_BUS_ENABLED=false
-      - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=oauth2
-      - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=glpat-icte6rcutahRVZ_72Xv5 # Consider using secrets management
-      - SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL=master
-      - SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS=configs/{application},configs/{application}/{profile}
       - MANAGEMENT_ENDPOINT_HEALTH_ENABLED=true
       - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health
-      - JAVA_TOOL_OPTIONS=XX:ReservedCodeCacheSize=32M -Xss256K -XX:MaxMetaspaceSize=64M -Xmx192m -XX:MaxDirectMemorySize=10M -XX:MaxRAMPercentage=75.0
+      # Java options - increased memory limits
+      - JAVA_TOOL_OPTIONS=-XX:ReservedCodeCacheSize=64M -Xss512K -XX:MaxMetaspaceSize=128M -Xmx256m -XX:MaxDirectMemorySize=32M -XX:MaxRAMPercentage=75.0
       - BPL_JVM_THREAD_COUNT=50
       - BPL_JVM_HEAD_ROOM=0
+      # Spring profile
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-sit}
     networks:
       - auxdromos-network
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 512M
         reservations:
-          memory: 128M
+          memory: 256M
     logging:
       driver: "json-file"
       options:
@@ -34,17 +43,19 @@ services:
         max-file: "3"
 
   rdbms:
-    # Modifica qui: usa variabile d'ambiente per il tag
+    # Usa variabili d'ambiente per tag, account e regione
     image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-rdbms:${RDBMS_IMAGE_TAG:-latest}
     container_name: auxdromos-rdbms
     ports:
-      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+      # Usa le variabili d'ambiente esportate dallo script
+      - "${EXTERNAL_PORT:-8089}:${INTERNAL_PORT:-8089}" # Aggiunti default
     environment:
-      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
-      PROFILE: "sit"
-      SPRING_PROFILES_ACTIVE: "sit"
-      SPRING_APPLICATION_NAME: "rdbms"
-      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0"
+      # Queste verranno lette dall'ambiente esterno (esportate dallo script)
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888" # Fisso
+      PROFILE: "${PROFILE:-sit}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
+      SPRING_APPLICATION_NAME: "rdbms" # Fisso
+      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0" # Fisso
     deploy:
       resources:
         limits:
@@ -59,27 +70,30 @@ services:
         max-file: "3"
 
   keycloak:
+    # Immagine Keycloak standard
     image: quay.io/keycloak/keycloak:26.0.7
     container_name: auxdromos-keycloak
     ports:
-      - "${EXTERNAL_PORT:-8082}:8080"
+      # Usa le variabili d'ambiente esportate dallo script
+      - "${EXTERNAL_PORT:-8082}:${INTERNAL_PORT:-8080}" # Aggiunti default
     environment:
-      KC_DB: postgres
-      KC_DB_URL_HOST: sit-auxdromos.cjgmm0kewpv2.us-east-1.rds.amazonaws.com
-      KC_DB_URL_DATABASE: sit-auxdromos
-      KC_DB_USERNAME: auxdromos
-      KC_DB_PASSWORD: DujDKqZHf60iiXPCtmHk # Consider using secrets management
-      KC_DB_SCHEMA: keycloak
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: adminpassword # Consider using secrets management
-      KC_HOSTNAME: sit.idp.auxdromos.it
-      KC_HTTP_ENABLED: 'true'
-      KC_PROXY: edge
-      KC_HTTP_RELATIVE_PATH: /
-      KC_HOSTNAME_STRICT: 'false'
-      KC_HEALTH_ENABLED: 'true'
-      KC_HTTP_MAX_CONNECTIONS: 50000
-      QUARKUS_HTTP_ACCESS_LOG_ENABLED: 'true'
+      # Queste verranno lette dall'ambiente esterno (esportate dallo script)
+      KC_DB: ${KC_DB:-postgres}
+      KC_DB_URL_HOST: ${KC_DB_URL_HOST}
+      KC_DB_URL_DATABASE: ${KC_DB_URL_DATABASE}
+      KC_DB_USERNAME: ${KC_DB_USERNAME}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD} # Letta da env (SecureString da SSM)
+      KC_DB_SCHEMA: ${KC_DB_SCHEMA:-keycloak}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD} # Letta da env (SecureString da SSM)
+      KC_HOSTNAME: ${KC_HOSTNAME}
+      KC_HTTP_ENABLED: ${KC_HTTP_ENABLED:-true}
+      KC_PROXY: ${KC_PROXY:-edge}
+      KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH:-/}
+      KC_HOSTNAME_STRICT: ${KC_HOSTNAME_STRICT:-false}
+      KC_HEALTH_ENABLED: ${KC_HEALTH_ENABLED:-true}
+      KC_HTTP_MAX_CONNECTIONS: ${KC_HTTP_MAX_CONNECTIONS:-50000}
+      QUARKUS_HTTP_ACCESS_LOG_ENABLED: ${QUARKUS_HTTP_ACCESS_LOG_ENABLED:-true}
     deploy:
       resources:
         limits:
@@ -97,17 +111,19 @@ services:
         max-file: "3"
 
   idp:
-    # Modifica qui: usa variabile d'ambiente per il tag
+    # Usa variabili d'ambiente per tag, account e regione
     image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:${IDP_IMAGE_TAG:-latest}
     container_name: auxdromos-idp
     ports:
-      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+      # Usa le variabili d'ambiente esportate dallo script
+      - "${EXTERNAL_PORT:-8081}:${INTERNAL_PORT:-8081}" # Aggiunti default
     environment:
-      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
-      PROFILE: "sit"
-      SPRING_PROFILES_ACTIVE: "sit"
-      SPRING_APPLICATION_NAME: "idp"
-      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0"
+      # Queste verranno lette dall'ambiente esterno (esportate dallo script)
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888" # Fisso
+      PROFILE: "${PROFILE:-sit}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
+      SPRING_APPLICATION_NAME: "idp" # Fisso
+      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0" # Fisso
     deploy:
       resources:
         limits:
@@ -122,17 +138,19 @@ services:
         max-file: "3"
 
   backend:
-    # Modifica qui: usa variabile d'ambiente per il tag
+    # Uses environment variables for tag, account, and region
     image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:${BACKEND_IMAGE_TAG:-latest}
     container_name: auxdromos-backend
     ports:
-      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+      # Uses environment variables exported by the script
+      - "${EXTERNAL_PORT:-8083}:${INTERNAL_PORT:-8083}" # Added defaults
     environment:
-      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
-      PROFILE: "sit"
-      SPRING_PROFILES_ACTIVE: "sit"
-      SPRING_APPLICATION_NAME: "backend"
-      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0"
+      # These are read from external environment (exported by the script)
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888" # Fixed
+      PROFILE: "${PROFILE:-sit}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
+      SPRING_APPLICATION_NAME: "backend" # Fixed
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0" # Fixed
     deploy:
       resources:
         limits:
@@ -145,19 +163,24 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    depends_on:
+      - config
+      - idp
 
   gateway:
-    # Modifica qui: usa variabile d'ambiente per il tag
+    # Uses environment variables for tag, account, and region
     image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:${GATEWAY_IMAGE_TAG:-latest}
     container_name: auxdromos-gateway
     ports:
-      - "${EXTERNAL_PORT}:${INTERNAL_PORT}"
+      # Uses environment variables exported by the script
+      - "${EXTERNAL_PORT:-8080}:${INTERNAL_PORT:-8080}" # Added defaults
     environment:
-      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
-      PROFILE: "sit"
-      SPRING_PROFILES_ACTIVE: "sit"
-      SPRING_APPLICATION_NAME: "gateway"
-      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0"
+      # These are read from external environment (exported by the script)
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888" # Fixed
+      PROFILE: "${PROFILE:-sit}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
+      SPRING_APPLICATION_NAME: "gateway" # Fixed
+      JAVA_TOOL_OPTIONS: "-Xmx576m -XX:MaxRAMPercentage=75.0" # Fixed
     deploy:
       resources:
         limits:
@@ -170,7 +193,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    depends_on:
+      - config
+      - backend
 
 networks:
   auxdromos-network:
-    driver: bridge
+    external: true

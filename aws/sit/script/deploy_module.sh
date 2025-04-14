@@ -1,363 +1,366 @@
 #!/bin/bash
-set -e
+# Script per deployare moduli applicativi AuxDromos tramite Docker Compose
+# Utilizza AWS Systems Manager Parameter Store per la configurazione e i segreti.
 
-# Determina il percorso assoluto della cartella base (una directory sopra lo script)
-BASE_DIR="$(dirname "$(readlink -f "$0")")/.."
+# Opzioni per uscire in caso di errore e gestire errori nelle pipe
+set -eo pipefail
 
-# Carica le variabili da BASE_DIR/env/deploy.env
-if [[ -f "$BASE_DIR/env/deploy.env" ]]; then
-  source "$BASE_DIR/env/deploy.env"
-else
-  echo "Errore: File deploy.env non trovato in $BASE_DIR/env"
-  exit 1
-fi
+# Determine the absolute path of the script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Set BASE_DIR to two directories up from the script location
+BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-# Assicura che la rete Docker esista
-docker network create auxdromos-network 2>/dev/null || true
+# Path for AWS SSM Parameter Store parameters
+GLOBAL_PARAM_PATH="/auxdromos/sit/global"
+SCRIPT_PARAM_PATH="/auxdromos/sit/script"
 
-# Recupera il nome del modulo passato come primo argomento
-MODULO=$1
+# --- NUOVA FUNZIONE: Recupera ed esporta parametri da AWS SSM ---
+# Richiede AWS CLI v2 e jq installati
+fetch_and_export_params() {
+  local PARAM_PATH="$1"
+  local AWS_REGION_PARAM="$2" # Passa la regione come argomento
+  local TEMP_ENV_FILE=$(mktemp)
+  echo "Recupero parametri da AWS SSM Path: ${PARAM_PATH} nella regione ${AWS_REGION_PARAM}..."
 
-# Impostazione dei valori di default per i moduli se non presenti in deploy.env
-MODULES=${MODULES:-"config rdbms keycloak gateway backend idp"}
-MODULE_ORDER=${MODULE_ORDER:-"config rdbms keycloak idp backend gateway"}
-
-
-if [[ -z "$MODULO" ]]; then
-  echo "Errore: nessun modulo specificato. Specificare un modulo o 'all' per deployare tutto."
-  echo "Moduli disponibili: $MODULES"
-  exit 1
-fi
-
-echo "=== Inizio deploy di $MODULO $(date) ==="
-
-# Carica le variabili specifiche del modulo *DOPO* aver ottenuto il nome del modulo
-if [[ -f "$BASE_DIR/env/${MODULO}.env" ]]; then
-  source "$BASE_DIR/env/${MODULO}.env"
-else
-  echo "Errore: File ${MODULO}.env non trovato in $BASE_DIR/env"
-  exit 1
-fi
-
-
-# Funzione per verificare se Keycloak è in esecuzione
-check_keycloak() {
-  # Verifica se il container è in esecuzione
-  if ! docker ps | grep -q "auxdromos-keycloak"; then
-    # Controlla se il container è terminato con errore
-    if docker ps -a | grep "auxdromos-keycloak" | grep -q "Exited"; then
-      echo "⚠️ Container Keycloak avviato ma terminato con errore. Log degli ultimi 50 righe:"
-      docker logs auxdromos-keycloak --tail 50
-      return 2  # Codice di errore specifico per container terminato
-    fi
-    return 1  # Container non trovato
-  fi
-
-  # Verifica che Keycloak sia realmente pronto rispondendo a una richiesta HTTP
-  if curl --silent --fail --max-time 5 http://localhost:8082/health > /dev/null 2>&1 ||
-     curl --silent --fail --max-time 5 http://localhost:8082/auth > /dev/null 2>&1 ||
-     curl --silent --fail --max-time 5 http://localhost:8082/realms/master > /dev/null 2>&1; then
-    return 0  # Keycloak è pronto e risponde
+  # Improved parameter fetching and export
+  aws ssm get-parameters-by-path \
+    --path "$PARAM_PATH" \
+    --with-decryption \
+    --recursive \
+    --region "${AWS_REGION_PARAM}" \
+    --output json | \
+    jq -r '.Parameters[] | .Name + "=" + .Value' | \
+    while IFS='=' read -r key value; do
+      local param_name=$(basename "$key")
+      echo "Esportazione parametro: ${param_name}"
+      echo "export ${param_name}='${value}'" >> "$TEMP_ENV_FILE"
+    done
+  
+  # Source the temporary file to set variables in current environment
+  if [ -f "$TEMP_ENV_FILE" ] && [ -s "$TEMP_ENV_FILE" ]; then
+    source "$TEMP_ENV_FILE"
+    rm -f "$TEMP_ENV_FILE"
+    echo "Parametri caricati nell'ambiente corrente."
   else
-    return 1  # Keycloak è in esecuzione ma non risponde
+    echo "Attenzione: Nessun parametro trovato in ${PARAM_PATH}"
+    rm -f "$TEMP_ENV_FILE"
+    return 1
   fi
+
+  # Verifica se la pipe ha avuto successo (jq o aws potrebbero fallire)
+  local pipe_status=${PIPESTATUS[0]} # Controlla lo stato di uscita del comando aws ssm
+  if [ $pipe_status -ne 0 ]; then
+       echo "Errore: Il comando aws ssm get-parameters-by-path per ${PARAM_PATH} ha fallito con codice ${pipe_status}."
+       return 1 # Ritorna errore
+  fi
+
+  # Verifica aggiuntiva: controlla se almeno una variabile attesa è stata esportata (opzionale)
+  # Esempio: if [[ -z "${EXPECTED_VAR_FROM_THIS_PATH}" ]]; then echo "Warning: Expected var not found"; fi
+
+  echo "Recupero parametri da ${PARAM_PATH} completato."
+  return 0 # Successo
 }
+# --- FINE NUOVA FUNZIONE ---
 
-# Funzione per verificare se un'immagine esiste su ECR
-check_image_exists() {
-  local MODULE_NAME=$1
-  local REPOSITORY="auxdromos-${MODULE_NAME}"
-  local REPOSITORY_NO_PREFIX="${MODULE_NAME}"
+# --- Funzioni Helper (Opzionali, da adattare se le usi) ---
+# check_keycloak() { ... }
+# check_image_exists() { ... }
+# Assicurati che usino le variabili AWS_DEFAULT_REGION e AWS_ACCOUNT_ID dall'ambiente
 
-  echo "Ricerca dell'ultima immagine per ${MODULE_NAME} su ECR..."
+# --- Funzione deploy_keycloak (Opzionale, se preferisci gestirlo separatamente da compose) ---
+# Se decidi di usare questa funzione, adattala come nella risposta precedente
+# per recuperare i parametri da SSM e usare `docker run` con le variabili -e.
+# Altrimenti, se Keycloak è gestito solo da docker-compose.yml, puoi rimuovere questa funzione.
 
-  # Ottieni il token di autenticazione per ECR
-  aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+# --- Funzione deploy_module (per moduli gestiti da docker-compose.yml) ---
+deploy_module() {
+  local module_to_deploy="$1"
+  # Determina il percorso del file docker-compose.yml
+  local compose_file_path="$BASE_DIR/sit/docker/docker-compose.yml" # Adjusted to avoid duplicate aws/
 
-  if [ $? -ne 0 ]; then
-      echo "Errore di autenticazione con ECR. Verificare le credenziali AWS."
+  echo ""
+  echo "-----------------------------------------"
+  echo "Deploying $module_to_deploy..."
+  echo "-----------------------------------------"
+
+  # --- OTTIENI REGIONE AWS (Esempio: da metadati EC2) ---
+  # Questo viene fatto una sola volta all'inizio dello script ora
+  if [[ -z "$AWS_DEFAULT_REGION" ]]; then
+      echo "Errore critico: AWS_DEFAULT_REGION non definita."
       return 1
   fi
+  # --- FINE OTTIENI REGIONE ---
 
-  # Prima prova con il prefisso auxdromos (come fa la pipeline)
-  if aws ecr describe-repositories --repository-names "$REPOSITORY" &>/dev/null; then
-    # Ottieni l'ultimo tag dall'output di describe-images (ordinato per data di push)
-    LATEST_TAG=$(aws ecr describe-images --repository-name "$REPOSITORY" --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
+  # --- RECUPERA PARAMETRI GLOBALI, SCRIPT E MODULO DA SSM ---
+  # I parametri globali e script sono già stati caricati da deploy_all o all'inizio
+  # Carichiamo solo quelli specifici del modulo
+  local MODULE_PARAM_PATH="/auxdromos/sit/${module_to_deploy}"
 
-    if [[ -z "$LATEST_TAG" ]]; then
-        echo "Nessun tag trovato per $REPOSITORY. Impossibile determinare l'ultima versione"
-        export ECR_REPOSITORY_NAME="$REPOSITORY"
-        return 1
-    fi
-
-    echo "Ultimo tag trovato: $LATEST_TAG"
-    VERSION="$LATEST_TAG" # Imposta la variabile VERSION all'ultimo tag
-    export ECR_REPOSITORY_NAME="$REPOSITORY"
-    export VERSION # Esporta la variabile VERSION
-    return 0
-  fi
-
-  # Se non trova con prefisso, prova senza prefisso
-  echo "Repository con prefisso non trovato, verifico $REPOSITORY_NO_PREFIX..."
-  if aws ecr describe-repositories --repository-names "$REPOSITORY_NO_PREFIX" &>/dev/null; then
-    # Ottieni l'ultimo tag dall'output di describe-images (ordinato per data di push)
-    LATEST_TAG=$(aws ecr describe-images --repository-name "$REPOSITORY_NO_PREFIX" --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
-
-    if [[ -z "$LATEST_TAG" ]]; then
-        echo "Nessun tag trovato per $REPOSITORY_NO_PREFIX. Impossibile determinare l'ultima versione"
-        export ECR_REPOSITORY_NAME="$REPOSITORY_NO_PREFIX"
-        return 1
-    fi
-
-    echo "Ultimo tag trovato: $LATEST_TAG"
-    VERSION="$LATEST_TAG" # Imposta la variabile VERSION all'ultimo tag
-    export ECR_REPOSITORY_NAME="$REPOSITORY_NO_PREFIX"
-    export VERSION # Esporta la variabile VERSION
-    return 0
-  fi
-
-  echo "Nessun repository trovato per il modulo $MODULE_NAME (cercato come $REPOSITORY e $REPOSITORY_NO_PREFIX)"
-
-    # Per tutti i moduli, tenta di creare il repository con prefisso auxdromos-
-    # perché è così che funziona la pipeline. Ritorna errore dato che l'immagine non esiste ancora.
-    echo "Tentativo di creazione del repository $REPOSITORY..."
-    if aws ecr create-repository --repository-name "$REPOSITORY" &>/dev/null; then
-        echo "Repository $REPOSITORY creato con successo, ma non contiene ancora immagini."
-        export ECR_REPOSITORY_NAME="$REPOSITORY"
-        return 1
-    else
-        echo "Errore nella creazione del repository $REPOSITORY"
-        return 1
-    fi
-
-        export AWS_ACCOUNT_ID AWS_DEFAULT_REGION VERSION ECR_REPOSITORY_NAME # Esporta le variabili
-        return 0
-}
-
-# Funzione per effettuare il deploy di Keycloak e il setup
-deploy_keycloak() {
-  echo "===== Deploying Keycloak... ====="
-  local BASE_DIR="$(dirname "$(readlink -f "$0")")/.."
-  # Assicura che la rete esista
-  docker network create auxdromos-network 2>/dev/null || true
-
-  # Verifica se keycloak.env esiste e carica le sue variabili
-  if [[ ! -f "$BASE_DIR/env/keycloak.env" ]]; then
-    echo "ERRORE: File keycloak.env non trovato in $BASE_DIR/env"
-    exit 1
-  fi
-
-  source "$BASE_DIR/env/keycloak.env"
-
-  # Arresta e rimuovi i container esistenti, se presenti
-  docker stop keycloak-db-auxdromos auxdromos-keycloak 2>/dev/null || true
-  docker rm keycloak-db-auxdromos auxdromos-keycloak 2>/dev/null || true
-
-echo "KC_DB_URL: $KC_DB_URL"
-echo "KEYCLOAK_ADMIN: $KEYCLOAK_ADMIN"
-# Attenzione: mostrare la password in chiaro può rappresentare un rischio di sicurezza
-echo "KEYCLOAK_ADMIN_PASSWORD: $KEYCLOAK_ADMIN_PASSWORD"
-
-  docker run -d \
-    --name auxdromos-keycloak \
-    --network auxdromos-network \
-    -p 8082:8080 \
-    -e KC_DB=postgres \
-    -e KC_DB_URL="${KC_DB_URL}" \
-    -e KC_HOSTNAME=localhost \
-    -e KEYCLOAK_ADMIN="${KEYCLOAK_ADMIN}" \
-    -e KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD}" \
-    quay.io/keycloak/keycloak:26.0.7 start-dev
-  # Verifica che Keycloak sia in esecuzione
-  echo "Verifica che Keycloak sia in esecuzione..."
-for i in {1..12}; do
-  STATUS=$(check_keycloak)
-  EXIT_CODE=$?
-
-  if [ $EXIT_CODE -eq 0 ]; then
-    echo "✅ Keycloak è in esecuzione e risponde alle richieste!"
-    break
-  elif [ $EXIT_CODE -eq 2 ]; then
-    echo "❌ Container Keycloak terminato con errore. Interrompo il deploy."
-    exit 1
-  fi
-
-  echo "Attendi l'avvio di Keycloak... ($i/12)"
-
-  # Ogni 3 tentativi, mostra alcuni log per aiutare il debug
-  if [ $((i % 3)) -eq 0 ]; then
-    echo "📋 Log recenti di Keycloak:"
-    docker logs auxdromos-keycloak --tail 20 2>/dev/null || echo "Nessun log disponibile"
-  fi
-
-  sleep 10
-  if [ $i -eq 12 ]; then
-    echo "❌ Timeout durante l'avvio di Keycloak."
-    echo "📋 Mostro gli ultimi 50 log per debug:"
-    docker logs auxdromos-keycloak --tail 50 2>/dev/null || echo "Nessun log disponibile"
-    exit 1
-  fi
-done
-
-  echo "Keycloak deployato con successo!"
-}
-
-# Funzione per deployare un modulo generico
-deploy_module() {
-  # Determina il percorso assoluto della cartella base (una directory sopra lo script)
-  local BASE_DIR="$(dirname "$(readlink -f "$0")")/.."
-  local MODULO="$1"
-  local COMPOSE_FILE_ORIGINAL="$BASE_DIR/docker/docker-compose.yml"
-
-  # Carica le variabili GLOBALI da BASE_DIR/env/deploy.env (necessarie per AWS creds, region, account etc.)
-  if [[ -f "$BASE_DIR/env/deploy.env" ]]; then
-    source "$BASE_DIR/env/deploy.env"
+  echo "Recupero parametri specifici per il modulo ${module_to_deploy}..."
+  if ! fetch_and_export_params "$MODULE_PARAM_PATH" "$AWS_DEFAULT_REGION"; then
+      echo "Attenzione: Nessun parametro specifico trovato per il modulo ${module_to_deploy}."
+      echo "Procedo con i parametri globali e di script già caricati."
   else
-    echo "Errore: File deploy.env non trovato in $BASE_DIR/env"
-    exit 1
+      echo "Parametri specifici per ${module_to_deploy} caricati con successo."
   fi
+  # --- FINE RECUPERO PARAMETRI MODULO ---
 
-  # Verifica la presenza delle variabili AWS essenziali
-  if [[ -z "$AWS_ACCOUNT_ID" || -z "$AWS_DEFAULT_REGION" ]]; then
-    echo "Errore: AWS_ACCOUNT_ID o AWS_DEFAULT_REGION non sono definite in deploy.env"
-    exit 1
+  # Verifica variabili AWS essenziali (già caricate)
+  if [[ -z "$AWS_ACCOUNT_ID" ]]; then
+    echo "Errore: AWS_ACCOUNT_ID non trovato nell'ambiente."
+    return 1
   fi
+  # Verifica altre variabili globali/script necessarie qui, se serve
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
-  local REPO_NAME="auxdromos-${MODULO}" # Costruisce il nome del repository ECR
-  local FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+  # Escludi 'config' e 'keycloak' se non sono in ECR
+  if [[ "$module_to_deploy" == "config" || "$module_to_deploy" == "keycloak" ]]; then
+      echo "Modulo $module_to_deploy non richiede immagine da ECR. Salto ricerca tag."
+      local LATEST_TAG="N/A" # O un valore appropriato
+  else
+      local REPO_NAME="auxdromos-${module_to_deploy}"
+      local FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
+      LATEST_TAG=$(aws ecr describe-images \
+                    --repository-name "${REPO_NAME}" \
+                    --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+                    --output text \
+                    --region "${AWS_DEFAULT_REGION}" 2>/dev/null)
 
-  echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
-
-  LATEST_TAG=$(aws ecr describe-images \
-                --repository-name "${REPO_NAME}" \
-                --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
-                --output text \
-                --region "${AWS_DEFAULT_REGION}" 2>/dev/null)
-
-  if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "None" ]; then
-      echo "Errore: Impossibile trovare l'ultimo tag per il repository ${REPO_NAME} in ECR."
-      echo "Possibili cause: Repository non esiste, nessun'immagine pushata, errore AWS CLI o permessi insufficienti."
-      # Verifica dettagli ruolo IAM dell'istanza (può aiutare nel debug dei permessi)
-      echo "Verifica ruolo IAM dell'istanza (se applicabile):"
-      TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null)
-      if [ -n "$TOKEN" ]; then
-          ROLE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/iam/security-credentials/ 2>/dev/null)
-          echo "Ruolo/Credenziali rilevato: $ROLE"
-          echo "Verificare che il ruolo/utente abbia i permessi ecr:DescribeImages."
-      else
-          echo "Impossibile recuperare metadati EC2 (potrebbe non essere un'istanza EC2)."
+      # Gestione errore migliorata
+      if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "None" ]; then
+          echo "Errore: Impossibile trovare un tag valido per il repository ${REPO_NAME} in ECR nella regione ${AWS_DEFAULT_REGION}."
+          echo "Verifica che il repository esista e contenga immagini taggate."
+          return 1 # Usa return invece di exit
       fi
-      exit 1 # Esce se non trova il tag
+      local IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
+      echo "Utilizzo l'immagine trovata: $IMAGE_NAME_WITH_TAG"
+
+      # --- ESPORTA LA VARIABILE D'AMBIENTE PER IL TAG ---
+      typeset -u upper_modulo="${module_to_deploy}" # Converte in maiuscolo
+      local DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
+      export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
+      echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
+
+      # --- Rinnova l'autenticazione AWS ECR ---
+      echo "Rinnovamento autenticazione AWS ECR..."
+      if ! aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${FULL_REPO_BASE}; then
+          echo "Errore durante l'autenticazione a AWS ECR."
+          return 1 # Usa return
+      fi
+      echo "Login ECR Succeeded"
   fi
+  # --- FINE LOGICA ECR ---
 
-  local IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
-  echo "Utilizzo l'immagine trovata: $IMAGE_NAME_WITH_TAG"
-  # --- FINE TROVA TAG ---
+  # Vai alla directory del docker-compose
+  local compose_dir=$(dirname "${compose_file_path}")
+  cd "$compose_dir" || { echo "Errore: directory $compose_dir non trovata."; return 1; }
 
-
-  # Rinnova l'autenticazione AWS ECR
-  echo "Rinnovamento autenticazione AWS ECR..."
-  aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${FULL_REPO_BASE}
-  if [ $? -ne 0 ]; then
-      echo "Errore durante l'autenticazione a AWS ECR."
-      exit 1
-  fi
-  echo "Login Succeeded" # Aggiunto per coerenza con il log precedente
-
-  # --- ESPORTA LA VARIABILE D'AMBIENTE PER IL TAG ---
-  # Crea il nome della variabile dinamicamente (es. RDBMS_IMAGE_TAG)
-  typeset -u upper_modulo="${MODULO}" # Rende il nome del modulo maiuscolo (bash/ksh/zsh)
-  # Alternativa POSIX: upper_modulo=$(echo "$MODULO" | tr '[:lower:]' '[:upper:]')
-  local DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
-  export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
-  echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}" # Verifica
-
-  # Vai alla directory docker
-  cd "$BASE_DIR/docker"
-
-  # Ottieni il nome della directory che contiene il docker-compose.yml originale
-  local COMPOSE_DIR=$(dirname "${COMPOSE_FILE_ORIGINAL}")
-  # Usa il nome della directory come nome del progetto
-  local PROJECT_NAME=$(basename "${COMPOSE_DIR}")
+  # Ottieni il nome del progetto Docker Compose (nome della directory)
+  local PROJECT_NAME=$(basename "${compose_dir}")
   echo "Utilizzo il nome progetto Docker Compose: ${PROJECT_NAME}"
 
   # Stop e rimuovi il container se esiste
-  local CONTAINER_NAME="auxdromos-${MODULO}" # Assicurati sia il nome corretto
+  local CONTAINER_NAME="auxdromos-${module_to_deploy}"
   echo "Stop e rimozione container esistente ${CONTAINER_NAME}..."
-  # Usa il file compose originale per stop e rm
-  docker-compose -p "${PROJECT_NAME}" --file "${COMPOSE_FILE_ORIGINAL}" stop $MODULO >/dev/null 2>&1 || echo "Container $MODULO non in esecuzione o già fermato."
-  docker-compose -p "${PROJECT_NAME}" --file "${COMPOSE_FILE_ORIGINAL}" rm -f $MODULO >/dev/null 2>&1 || echo "Container $MODULO non trovato per la rimozione."
+  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" stop $module_to_deploy >/dev/null 2>&1 || echo "Info: Container $module_to_deploy non in esecuzione o già fermato."
+  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" rm -f $module_to_deploy >/dev/null 2>&1 || echo "Info: Container $module_to_deploy non trovato per la rimozione."
 
-  # Rimuovi l'immagine vecchia localmente per forzare il pull della nuova
-  echo "Rimozione immagine locale precedente (se esiste) per forzare il pull..."
-  # Rimuove l'immagine specifica con il tag trovato
-  docker image rm ${IMAGE_NAME_WITH_TAG} >/dev/null 2>&1 || echo "Immagine locale ${IMAGE_NAME_WITH_TAG} non trovata o già rimossa."
-  # Rimuove anche l'eventuale immagine :latest locale per sicurezza
-  docker image rm ${FULL_REPO_BASE}/${REPO_NAME}:latest >/dev/null 2>&1 || true
-
+  # Rimuovi l'immagine vecchia localmente (solo se abbiamo trovato un tag ECR)
+  if [[ "$LATEST_TAG" != "N/A" ]]; then
+      echo "Rimozione immagine locale precedente (se esiste) per forzare il pull..."
+      docker image rm ${IMAGE_NAME_WITH_TAG} >/dev/null 2>&1 || echo "Info: Immagine locale ${IMAGE_NAME_WITH_TAG} non trovata o già rimossa."
+      # Rimuovi anche il tag :latest se presente
+      docker image rm ${FULL_REPO_BASE}/${REPO_NAME}:latest >/dev/null 2>&1 || true
+  fi
 
   echo "Avvio container ${CONTAINER_NAME} con docker-compose..."
-  # Esegui docker-compose per il modulo specifico usando il file ORIGINALE
-  # Docker Compose userutomaticamente la variabile d'ambiente esportata (es. RDBMS_IMAGE_TAG)
-  docker-compose -p "${PROJECT_NAME}" \
-                 --file "${COMPOSE_FILE_ORIGINAL}" \
-                 --env-file "$BASE_DIR/env/${MODULO}.env" \
-                 --env-file "$BASE_DIR/env/deploy.env" \
-                 up -d $MODULO
+  # --- COMANDO DOCKER-COMPOSE MODIFICATO: SENZA --env-file ---
+  # Usa le variabili esportate da fetch_and_export_params e quelle del tag
+  if ! docker-compose -p "${PROJECT_NAME}" \
+                 --file "${compose_file_path}" \
+                 up -d $module_to_deploy; then
+      echo "Errore durante l'esecuzione di 'docker-compose up' per ${module_to_deploy}."
+      # Mostra log in caso di fallimento dell'up
+      echo "Ultime righe di log del tentativo di avvio:"
+      docker logs --tail 50 ${CONTAINER_NAME} 2>/dev/null || echo "Nessun log disponibile per ${CONTAINER_NAME}"
+      return 1
+  fi
+  # --- FINE COMANDO ---
 
   # Verifica se il container è stato avviato correttamente
+  echo "Verifica avvio container ${CONTAINER_NAME}..."
+  sleep 5 # Breve attesa per dare tempo al container di apparire
   if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
       echo "Container ${CONTAINER_NAME} avviato con successo."
       echo "Attendi 10 secondi per l'inizializzazione..."
       sleep 10
-      echo "=== Prime righe di log del servizio ${MODULO} ==="
+      echo "=== Prime righe di log del servizio ${module_to_deploy} ==="
       docker logs --tail 20 ${CONTAINER_NAME}
       echo "=========================================="
-      echo "=== Deploy di $MODULO (tag: ${LATEST_TAG}) completato con successo $(date) ==="
-      # Non usare exit 0 qui se questa funzione è chiamata da deploy_all
+      echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) completato con successo $(date) ==="
       return 0
   else
-      echo "Errore nell'avvio del container ${CONTAINER_NAME}."
-      echo "=== Deploy di $MODULO (tag: ${LATEST_TAG}) fallito $(date) ==="
+      echo "Errore: Container ${CONTAINER_NAME} non trovato in esecuzione dopo 'up -d'."
+      echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) fallito $(date) ==="
       echo "Ultime righe di log del container (se disponibili):"
       docker logs --tail 50 ${CONTAINER_NAME} 2>/dev/null || echo "Nessun log disponibile"
-      # Non usare exit 1 qui se questa funzione è chiamata da deploy_all
-      return 1 # Ritorna un codice di errore per indicare fallimento
+      return 1 # Ritorna un codice di errore
   fi
 }
 
-# Funzione per eseguire il deploy di tutti i moduli nell'ordine corretto
+# --- Funzione deploy_all ---
 deploy_all() {
-  # Successione predefinita dei moduli da deployare
+  # I parametri globali e script sono già stati caricati all'inizio
+  if [[ -z "$MODULE_ORDER" ]]; then
+      echo "Errore: MODULE_ORDER non definito nell'ambiente. Impossibile procedere con 'all'."
+      exit 1
+  fi
+  echo "Ordine di deploy definito: $MODULE_ORDER"
+
+  local deploy_failed=0
+  local deployed_modules=()
+  local failed_modules=()
+
   for module in $MODULE_ORDER; do
-    echo "Deploying $module..."
+    # Chiama deploy_module (che ora recupera i suoi parametri specifici)
+    if deploy_module "$module"; then
+        deployed_modules+=("$module")
+    else
+        echo "❌ Deploy del modulo $module fallito."
+        failed_modules+=("$module")
+        deploy_failed=1
+        # break # Decommenta per interrompere al primo fallimento
+    fi
 
-    deploy_module "$module"
-
-    # Attendi tra i deploy per assicurarti che i servizi siano pronti
-    sleep 15
+    # Attendi tra i deploy se necessario
+    if [[ $deploy_failed -eq 0 ]]; then
+        echo "Attesa di 15 secondi prima del prossimo modulo..."
+        sleep 15
+    else
+        echo "Fallimento rilevato, procedo al prossimo modulo (se non interrotto)..."
+        sleep 5 # Breve attesa anche in caso di fallimento
+    fi
   done
+
+  echo ""
+  echo "--- Riepilogo Deploy 'all' ---"
+  if [ ${#deployed_modules[@]} -gt 0 ]; then
+      echo "✅ Moduli deployati con successo: ${deployed_modules[*]}"
+  fi
+  if [ ${#failed_modules[@]} -gt 0 ]; then
+      echo "oduli falliti: ${failed_modules[*]}"
+  fi
+  echo "-----------------------------"
+
+  if [ $deploy_failed -eq 1 ]; then
+      echo "⚠️ Uno o più moduli non sono stati deployati correttamente."
+      exit 1 # Esce con errore se almeno un modulo è fallito
+  fi
 }
 
-# Logica principale per scegliere cosa deployare
-if [[ "$MODULO" == "all" ]]; then
-  echo "Deploying all modules..."
-  deploy_all
-else
-  # Verifica se il modulo specificato è valido
-  if [[ " $MODULES " =~ " $MODULO " ]]; then
-#    if [[ "$MODULO" == "keycloak" ]]; then
-#      deploy_keycloak
-#    else
-#      deploy_module "$MODULO"
-#    fi
-    deploy_module "$MODULO"
+# --- Logica Principale ---
 
-  else
-    echo "Errore: modulo non valido. Moduli disponibili: $MODULES"
-    exit 1
-  fi
+# Assicura che la rete Docker esista
+echo "Assicurazione esistenza rete Docker auxdromos-network..."
+docker network create auxdromos-network >/dev/null 2>&1 || echo "Info: Rete auxdromos-network già esistente o errore nella creazione ignorato."
+
+# Recupera il nome del modulo passato come primo argomento
+MODULO_ARG=$1
+
+if [[ -z "$MODULO_ARG" ]]; then
+  echo "Errore: nessun modulo specificato. Specificare un modulo o 'all' per deployare tutto."
+  # Potremmo leggere MODULES da SSM qui, ma per ora lo lasciamo hardcoded nell'errore
+  echo "Esempio Moduli: config rdbms keycloak gateway backend idp"
+  exit 1
 fi
 
-echo "=== Deploy completato $(date) ==="
+echo "=== Inizio deploy di '$MODULO_ARG' $(date) ==="
+
+# --- CARICA PARAMETRI GLOBALI E SCRIPT UNA SOLA VOLTA ALL'INIZIO ---
+echo "Recupero configurazione iniziale da AWS Systems Manager Parameter Store..."
+# 1. Determina Regione - Logica migliorata per funzionare sia in locale che su EC2
+echo "Determinazione della regione AWS..."
+
+# Verifica se AWS_DEFAULT_REGION è già impostata nell'ambiente
+if [[ -n "${AWS_DEFAULT_REGION}" ]]; then
+    echo "Utilizzando la regione AWS dall'ambiente: ${AWS_DEFAULT_REGION}"
+else
+    # Se non è impostata, prova a determinarla dai metadati EC2
+    echo "AWS_DEFAULT_REGION non impostata. Tentativo di rilevare la regione dai metadati EC2..."
+    
+    # Usa un timeout ridotto per evitare attese lunghe in ambiente locale
+    EC2_REGION=$(curl -s --connect-timeout 1 --max-time 1 http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region 2>/dev/null)
+    
+    # Verifica se la regione è stata recuperata con successo
+    if [[ -n "$EC2_REGION" && "$EC2_REGION" != "null" ]]; then
+        echo "Regione rilevata dai metadati EC2: ${EC2_REGION}"
+        AWS_DEFAULT_REGION="$EC2_REGION"
+    else
+        echo "Attenzione: Impossibile determinare la regione dai metadati EC2."
+        echo "Impostazione della regione predefinita a us-east-1."
+        echo "Per utilizzare una regione diversa, impostare la variabile d'ambiente AWS_DEFAULT_REGION."
+        
+        # Imposta us-east-1 come default
+        AWS_DEFAULT_REGION="us-east-1"
+    fi
+fi
+
+# Esporta la regione per i comandi successivi
+export AWS_DEFAULT_REGION
+echo "Regione AWS in uso: ${AWS_DEFAULT_REGION}"
+
+# 2. Carica Parametri Globali
+echo "Caricamento parametri globali da ${GLOBAL_PARAM_PATH}..."
+if ! fetch_and_export_params "$GLOBAL_PARAM_PATH" "$AWS_DEFAULT_REGION"; then
+    echo "Errore Critico nel recupero dei parametri globali da ${GLOBAL_PARAM_PATH}. Impossibile procedere."
+    exit 1
+fi
+echo "Parametri globali caricati con successo."
+
+# 3. Carica Parametri Script
+echo "Caricamento parametri di script da ${SCRIPT_PARAM_PATH}..."
+if ! fetch_and_export_params "$SCRIPT_PARAM_PATH" "$AWS_DEFAULT_REGION"; then
+    echo "Attenzione: Errore nel recupero dei parametri dello script da ${SCRIPT_PARAM_PATH}. Alcune funzionalità potrebbero usare valori di default."
+    # Imposta default essenziali se SSM fallisce e stiamo facendo 'all'
+    if [[ "$MODULO_ARG" == "all" && -z "$MODULE_ORDER" ]]; then
+        echo "Imposto MODULE_ORDER di default: config rdbms keycloak idp backend gateway"
+        export MODULE_ORDER="config rdbms keycloak idp backend gateway"
+    fi
+else
+    # Se MODULE_ORDER non è stato caricato nemmeno con successo, imposta default
+     if [[ "$MODULO_ARG" == "all" && -z "$MODULE_ORDER" ]]; then
+        echo "Attenzione: MODULE_ORDER vuoto dopo recupero da SSM. Imposto default."
+        export MODULE_ORDER="config rdbms keycloak idp backend gateway"
+    fi
+fi
+echo "Configurazione iniziale caricata."
+# --- FINE CARICAMENTO INIZIALE ---
+
+
+# Esegui l'azione richiesta
+if [[ "$MODULO_ARG" == "all" ]]; then
+  deploy_all
+elif [[ "$MODULO_ARG" == "keycloak" ]]; then
+  # Se vuoi usare la funzione separata deploy_keycloak (con docker run):
+  # deploy_keycloak
+  # Altrimenti, se è gestito da compose come gli altri:
+  deploy_module "$MODULO_ARG"
+else
+  # Deploy di un modulo singolo gestito da compose
+  deploy_module "$MODULO_ARG"
+fi
+
+# Controlla lo stato di uscita dell'ultima operazione (deploy_all o deploy_module)
+exit_status=$?
+
+echo ""
+echo "========================================="
+if [ $exit_status -eq 0 ]; then
+  echo "=== Deploy di '$MODULO_ARG' completato con successo $(date) ==="
+else
+  echo "=== Deploy di '$MODULO_ARG' terminato con errori $(date) ==="
+fi
+echo "========================================="
+
+exit $exit_status # Esce con lo stato dell'ultima operazione
