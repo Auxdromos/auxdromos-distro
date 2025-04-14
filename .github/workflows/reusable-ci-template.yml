@@ -547,8 +547,8 @@ jobs:
 
           # --- MODIFICA QUESTA PARTE ---
           # Processa ogni prefisso su una riga separata
-          VERSIONS=$(echo "$RAW_PREFIXES" | tr ' ' '\n' | sed "s#^${S3_BASE_PATH}##" | sed 's#/$##')
-          # ---------------------------
+          # Processa ogni prefisso (assumendo separatori TAB) su una riga separata
+          VERSIONS=$(echo "$RAW_PREFIXES" | tr '\t' '\n' | sed "s#^${S3_BASE_PATH}##" | sed 's#/$##')          # ---------------------------
 
           echo "Versioni trovate (candidate):"
           echo "$VERSIONS" # Ora dovrebbe mostrare 1.67, 1.70, ..., latest su righe separate
