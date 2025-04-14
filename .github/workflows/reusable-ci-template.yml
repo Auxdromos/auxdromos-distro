@@ -98,13 +98,17 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
+
+    permissions:
+      id-token: write   # Necessario per richiedere il token OIDC a GitHub
+      contents: read    # Solitamente necessario per actions/checkout
+
     steps:
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }} # Usa la variabile globale definita sopra
+          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Run Version Check Script
         run: |
@@ -289,6 +293,10 @@ jobs:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
       ECR_REPOSITORY: auxdromos-${{ needs.extract_module_info.outputs.module_name }} # Nome ECR basato sul modulo
+    permissions:
+      id-token: write   # Necessario per richiedere il token OIDC a GitHub
+      contents: read    # Solitamente necessario per actions/checkout
+
     steps:
       # Checkout del codice del chiamante
       - name: Checkout calling repository code
@@ -300,12 +308,11 @@ jobs:
           name: build-artifacts-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
           path: target # Scarica nella directory target
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -360,6 +367,11 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
+
+    permissions:
+      id-token: write   # Necessario per richiedere il token OIDC a GitHub
+      contents: read    # Solitamente necessario per actions/checkout
+
     steps:
       - name: Checkout code # Necessario se si accede a file non inclusi negli artifact
         uses: actions/checkout@v4
@@ -376,12 +388,11 @@ jobs:
           name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}
           path: artifacts/package # Scarica in una sottodirectory
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Upload to S3
         run: |
@@ -444,13 +455,17 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
+
+    permissions:
+      id-token: write   # Necessario per richiedere il token OIDC a GitHub
+      contents: read    # Solitamente necessario per actions/checkout
+
     steps:
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Create and Upload latest.json
         run: |
@@ -489,13 +504,17 @@ jobs:
     if: github.event_name == 'push' && github.ref_name == 'main'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+
+    permissions:
+      id-token: write   # Necessario per richiedere il token OIDC a GitHub
+      contents: read    # Solitamente necessario per actions/checkout
+
     steps:
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Run S3 Cleanup Script
         run: |
@@ -567,12 +586,11 @@ jobs:
     steps:
       # Non serve checkout qui, lo script di deploy usa S3 o lo script deploy_module.sh già presente su EC2
 
-      - name: Configure AWS Credentials # Necessario per aws s3 cp se MODULE_NAME è 'distro'
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::<ID_ACCOUNT_AWS>:role/GitHubActions-AuxDromos-DeployRole # <-- Incolla l'ARN del tuo ruolo qui
+          aws-region: ${{ env.AWS_REGION }} # O secrets.AWS_DEFAULT_REGION
 
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.9.0
