@@ -548,17 +548,20 @@ jobs:
 
           echo "Versioni trovate (candidate):"
           echo "$VERSIONS"
-
-          # Filtra ulteriormente per assicurarsi che siano formati di versione validi (semplice check)
-          VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$')
-
+          
+          VALID_VERSIONS=""
+          VERSION_COUNT=0
+          
+          if [[ -n "$VERSIONS" ]]; then
+          # Filtra e conta solo se ci sono versioni candidate
+          VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$' || true) # Aggiunto || true per non fallire se grep non trova nulla
+          VERSION_COUNT=$(echo "$VALID_VERSIONS" | grep -cv '^$' || true) # Già corretto con || true
+          fi
+          
           echo "Versioni valide filtrate:"
           echo "$VALID_VERSIONS"
-
-          # Conta le versioni valide in modo robusto
-          VERSION_COUNT=$(echo "$VALID_VERSIONS" | grep -cv '^$' || true) # Usa grep -c e || true per gestire 0 risultati
           echo "Numero di versioni valide: $VERSION_COUNT"
-
+          
           if [[ $VERSION_COUNT -gt $KEEP_LATEST ]]; then
             TO_DELETE=$(($VERSION_COUNT - $KEEP_LATEST))
             echo "Rimozione delle $TO_DELETE versioni più vecchie..."
