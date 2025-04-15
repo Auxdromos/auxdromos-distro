@@ -585,28 +585,48 @@ jobs:
           role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
           aws-region: ${{ env.AWS_REGION }} # Usa la regione statica
 
+      # In .github/workflows/reusable-ci-template.yml
+
       - name: Fetch EC2 Details and S3 Bucket from Parameter Store
         id: fetch-secrets
         run: |
+          set -e # Interrompi lo script immediatamente in caso di errore
+
+          echo "Recupero parametri SSM..."
           EC2_USER_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_USER_PARAM }}" --query Parameter.Value --output text)
           EC2_HOST_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_HOST_PARAM }}" --query Parameter.Value --output text)
           EC2_KEY_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_KEY_PARAM }}" --with-decryption --query Parameter.Value --output text)
           S3_BUCKET_VAL=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
+          echo "Parametri recuperati."
+
+          # Controlla se i valori recuperati sono vuoti
+          echo "Controllo valori recuperati..."
+          if [[ -z "$EC2_USER_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_USER_PARAM"; exit 1; fi
+          if [[ -z "$EC2_HOST_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_HOST_PARAM"; exit 1; fi
+          if [[ -z "$EC2_KEY_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_KEY_PARAM (SecureString)"; exit 1; fi
+          if [[ -z "$S3_BUCKET_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
+          echo "Valori non vuoti."
 
           # Maschera il valore della chiave PRIMA di usarlo o fare output
           echo "::add-mask::$EC2_KEY_VAL"
 
           # Fai l'output del CONTENUTO della chiave per ssh-agent usando un delimitatore
-          # Questo gestisce correttamente le chiavi multi-linea
           echo "SSH_KEY_CONTENT<<EOF" >> $GITHUB_OUTPUT
           echo "$EC2_KEY_VAL" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
+
+          # Imposta le variabili d'ambiente per gli step successivi
+          echo "DEBUG: Valore EC2_HOST_VAL prima di GITHUB_ENV: ->${EC2_HOST_VAL}<-" # <-- AGGIUNGI QUESTO DEBUG
+          echo "EC2_USER=$EC2_USER_VAL" >> $GITHUB_ENV
+          echo "EC2_HOST=$EC2_HOST_VAL" >> $GITHUB_ENV
+          echo "S3_BUCKET_NAME=$S3_BUCKET_VAL" >> $GITHUB_ENV
+          echo "DEBUG: Variabili impostate in GITHUB_ENV." # <-- AGGIUNGI QUESTO DEBUG
+
           # Salva la chiave SSH in un file temporaneo
           SSH_KEY_PATH=$(mktemp)
           echo "$EC2_KEY_VAL" > "$SSH_KEY_PATH"
           chmod 600 "$SSH_KEY_PATH"
-
+          
           # Rendi disponibile il path del file per il prossimo step
           echo "SSH_KEY_PATH=$SSH_KEY_PATH" >> $GITHUB_OUTPUT
 
@@ -615,18 +635,20 @@ jobs:
         with:
           # Usa il CONTENUTO della chiave dall'output dello step precedente
           ssh-private-key: ${{ steps.fetch-secrets.outputs.SSH_KEY_CONTENT }}
+
       - name: Add EC2 Host to Known Hosts
-        # Rimuovi il blocco 'env:' qui sotto
         run: |
+          echo "DEBUG: Valore EC2_HOST all'inizio dello step: ->${EC2_HOST}<-" # <-- AGGIUNGI QUESTO DEBUG
           # Verifica che EC2_HOST non sia vuoto prima di usarlo
           if [[ -z "$EC2_HOST" ]]; then
             echo "ERRORE: La variabile EC2_HOST è vuota!"
             exit 1
-          fi
-          mkdir -p ~/.ssh
-          echo "Aggiungo host $EC2_HOST a known_hosts"
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+         fi
+         mkdir -p ~/.ssh
+         echo "Aggiungo host $EC2_HOST a known_hosts"
+         # Metti tra virgolette $EC2_HOST per sicurezza, anche se ssh-keyscan potrebbe gestirlo
+         ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+         chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy Script
         env:
