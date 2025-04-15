@@ -60,7 +60,7 @@ services:
       resources:
         limits:
           memory: 768M
-    restart: unless-stopped
+    restart: no
     networks:
       - auxdromos-network
     logging:
@@ -163,9 +163,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    depends_on:
-      - config
-      - idp
 
   gateway:
     # Uses environment variables for tag, account, and region
@@ -193,9 +190,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    depends_on:
-      - config
-      - backend
 
 networks:
   auxdromos-network:

@@ -1,5 +1,4 @@
 # .github/workflows/main.yml
-# Workflow per il modulo DISTRO che chiama la pipeline riutilizzabile
 name: DISTRO CI/CD
 
 on:
@@ -16,34 +15,17 @@ on:
 jobs:
   call-reusable-pipeline:
     name: Run Shared AuxDromos CI/CD
-    # Specifica il percorso del workflow riutilizzabile nello stesso repository 'distro'
-    # Quando si usa un path locale, NON si specifica la versione (@main, @tag, @sha)
-    # GitHub usa automaticamente la versione dello stesso commit.
-    uses: ./.github/workflows/reusable-ci-template.yml # Rimuovi @main
+    uses: ./.github/workflows/reusable-ci-template.yml
 
-    # --- AGGIUNGI QUESTO BLOCCO ---
     permissions:
-      id-token: write   # Permette al job di richiedere un token OIDC
-      contents: read    # Permesso standard per checkout, ecc.
-    # -----------------------------
+      id-token: write
+      contents: read
 
-    # Passa gli input richiesti (se ce ne sono oltre ai default)
     with:
-      java-version: '17' # Puoi omettere se '17' è il default desiderato
+      java-version: '17'
 
-    # Passa i segreti richiesti dal workflow riutilizzabile.
-    # Questi segreti devono essere definiti nelle impostazioni di QUESTO repository (auxdromos-distro).
-    secrets:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
-      S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-      EC2_USER: ${{ secrets.EC2_USER }}
-      EC2_HOST: ${{ secrets.EC2_HOST }}
-      EC2_PRIVATE_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
-      # BUILD_ARGS: ${{ secrets.BUILD_ARGS }} # Passa questo se il template lo richiede e lo usi
-
-    # Alternativa più concisa se i nomi dei segreti corrispondono:
+    # Rimuovi tutti i segreti AWS/EC2. Non serve più passarli.
+    secrets: {}
+    # Oppure, se hai definito i segreti a livello di repository/organizzazione
+    # e vuoi passare solo quelli che potrebbero servire in futuro (ma non ora):
     # secrets: inherit
-
