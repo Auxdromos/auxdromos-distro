@@ -593,15 +593,19 @@ jobs:
           EC2_KEY_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_KEY_PARAM }}" --with-decryption --query Parameter.Value --output text)
           S3_BUCKET_VAL=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
 
-          echo "EC2_USER=$EC2_USER_VAL" >> $GITHUB_ENV
-          echo "EC2_HOST=$EC2_HOST_VAL" >> $GITHUB_ENV
-          echo "S3_BUCKET_NAME=$S3_BUCKET_VAL" >> $GITHUB_ENV # Imposta anche se usato solo da distro
+          # Maschera il valore della chiave PRIMA di usarlo o fare output
+          echo "::add-mask::$EC2_KEY_VAL"
 
+          # Fai l'output del CONTENUTO della chiave per ssh-agent usando un delimitatore
+          # Questo gestisce correttamente le chiavi multi-linea
+          echo "SSH_KEY_CONTENT<<EOF" >> $GITHUB_OUTPUT
+          echo "$EC2_KEY_VAL" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
           # Salva la chiave SSH in un file temporaneo
           SSH_KEY_PATH=$(mktemp)
           echo "$EC2_KEY_VAL" > "$SSH_KEY_PATH"
           chmod 600 "$SSH_KEY_PATH"
-          echo "::add-mask::$EC2_KEY_VAL" # Maschera il valore della chiave nei log
 
           # Rendi disponibile il path del file per il prossimo step
           echo "SSH_KEY_PATH=$SSH_KEY_PATH" >> $GITHUB_OUTPUT
@@ -609,9 +613,8 @@ jobs:
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          # Usa il path del file temporaneo contenente la chiave
-          ssh-private-key: ${{ steps.fetch-secrets.outputs.SSH_KEY_PATH }}
-
+          # Usa il CONTENUTO della chiave dall'output dello step precedente
+          ssh-private-key: ${{ steps.fetch-secrets.outputs.SSH_KEY_CONTENT }}
       - name: Add EC2 Host to Known Hosts
         env:
           EC2_HOST: ${{ env.EC2_HOST }} # Impostata da fetch-secrets
