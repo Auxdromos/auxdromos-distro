@@ -592,7 +592,16 @@ jobs:
           EC2_HOST_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_HOST_PARAM }}" --query Parameter.Value --output text)
           EC2_KEY_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_KEY_PARAM }}" --with-decryption --query Parameter.Value --output text)
           S3_BUCKET_VAL=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
-
+          echo "Parametri recuperati."
+          
+          # Controlla se i valori recuperati sono vuoti
+          echo "Controllo valori recuperati..."
+          if [[ -z "$EC2_USER_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_USER_PARAM"; exit 1; fi
+          if [[ -z "$EC2_HOST_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_HOST_PARAM"; exit 1; fi
+          if [[ -z "$EC2_KEY_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_KEY_PARAM (SecureString)"; exit 1; fi
+          if [[ -z "$S3_BUCKET_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
+          echo "Valori non vuoti."
+          
           # Maschera il valore della chiave PRIMA di usarlo o fare output
           echo "::add-mask::$EC2_KEY_VAL"
 
@@ -602,6 +611,13 @@ jobs:
           echo "$EC2_KEY_VAL" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
+          # Imposta le variabili d'ambiente per gli step successivi
+          echo "DEBUG: Valore EC2_HOST_VAL prima di GITHUB_ENV: ->${EC2_HOST_VAL}<-" # <-- AGGIUNGI QUESTO DEBUG
+          echo "EC2_USER=$EC2_USER_VAL" >> $GITHUB_ENV
+          echo "EC2_HOST=$EC2_HOST_VAL" >> $GITHUB_ENV
+          echo "S3_BUCKET_NAME=$S3_BUCKET_VAL" >> $GITHUB_ENV
+          echo "DEBUG: Variabili impostate in GITHUB_ENV." # <-- AGGIUNGI QUESTO DEBUG
+  
           # Salva la chiave SSH in un file temporaneo
           SSH_KEY_PATH=$(mktemp)
           echo "$EC2_KEY_VAL" > "$SSH_KEY_PATH"
@@ -618,6 +634,7 @@ jobs:
       - name: Add EC2 Host to Known Hosts
         # Rimuovi il blocco 'env:' qui sotto
         run: |
+          echo "DEBUG: Valore EC2_HOST all'inizio dello step: ->${EC2_HOST}<-"
           # Verifica che EC2_HOST non sia vuoto prima di usarlo
           if [[ -z "$EC2_HOST" ]]; then
             echo "ERRORE: La variabile EC2_HOST è vuota!"
