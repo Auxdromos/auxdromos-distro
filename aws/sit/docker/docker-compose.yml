@@ -100,7 +100,7 @@ services:
           memory: 1536M
         reservations:
           memory: 1G
-    command: start-dev
+    command: start
     restart: unless-stopped
     networks:
       - auxdromos-network
