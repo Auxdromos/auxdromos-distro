@@ -11,18 +11,16 @@ on:
         required: false
         type: string
         default: '17'
-      # Potresti aggiungere input per i percorsi dei parametri SSM se vuoi renderli configurabili
-      # ssm-param-path-prefix:
-      #   description: 'Prefisso per i parametri SSM (es. /github/sit/)'
-      #   required: false
-      #   type: string
-      #   default: '/github/sit/' # O un default sensato
+      maven-profiles: # <-- NUOVO INPUT
+        description: 'Profili Maven da attivare (es. -Psit,prod)'
+        required: false
+        type: string
+        default: '-Psit' # Default per mantenere comportamento precedente
 
     # Non sono più richiesti segreti AWS/EC2 dal chiamante
-    secrets: {} # Rimuovi tutti i segreti precedenti
+    secrets: {}
 
 # Imposta la regione AWS staticamente
-# Rimuovi le altre variabili globali che verranno recuperate da SSM
 env:
   AWS_REGION: us-east-1 # <-- IMPOSTA QUI LA TUA REGIONE STATICA
 
@@ -34,7 +32,6 @@ jobs:
       module_name: ${{ steps.extract.outputs.MODULE_NAME }}
       version: ${{ steps.extract.outputs.VERSION }}
     steps:
-      # Questo checkout prende il codice del REPOSITORY CHIAMANTE
       - name: Checkout calling repository code
         uses: actions/checkout@v4
 
@@ -42,18 +39,15 @@ jobs:
         id: extract
         run: |
           echo "Estrazione delle informazioni dal pom.xml del repository chiamante..."
-          # --- USA UN METODO PIU' ROBUSTO PER ESTRARRE DA POM ---
           if [ -f "pom.xml" ]; then
             echo "Installazione Maven per estrazione..."
-            # Assicurati che Java sia disponibile se non giget update && sudo apt-get install -y openjdk-17-jdk maven
-            # Oppure usa setup-java action se preferisci
+            sudo apt-get update && sudo apt-get install -y openjdk-${{ inputs.java-version }}-jdk maven
             echo "Usando Maven per estrarre artifactId e version..."
             MODULE_NAME=$(mvn help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
             VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
           else
             echo "ATTENZIONE: pom.xml non trovato nel repository chiamante."
-            MODULE_NAME=${{ github.repository_owner }}-${{ github.repository }} # Nome repo come fallback
-            MODULE_NAME=$(basename $MODULE_NAME) # Prendi solo il nome del repo
+            MODULE_NAME=$(basename ${{ github.repository }}) # Nome repo come fallback
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             VERSION="1.0.0-${SHORT_SHA}" # Versione di fallback
           fi
@@ -75,30 +69,17 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      # Definisci qui il nome del parametro SSM per l'Account ID se serve
-      # SSM_AWS_ACCOUNT_ID_PARAM: '/github/common/aws_account_id' # Esempio
-
     permissions:
       id-token: write
       contents: read
-
     steps:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }} # Usa la regione statica
-
-      # --- Opzionale: Recupera Account ID se serve per ECR o altro ---
-      # - name: Fetch AWS Account ID from Parameter Store
-      #   id: get-aws-account
-      #   run: |
-      #     AWS_ACCOUNT_ID_VAL=$(aws ssm get-parameter --name "${{ env.SSM_AWS_ACCOUNT_ID_PARAM }}" --query Parameter.Value --output text)
-      #     echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID_VAL" >> $GITHUB_ENV
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Run Version Check Script
-        # env:
-        #   AWS_ACCOUNT_ID: ${{ steps.get-aws-account.outputs.AWS_ACCOUNT_ID }} # Se recuperato sopra
         run: |
           set -e
           set -o pipefail
@@ -146,8 +127,8 @@ jobs:
 
       - name: Build with Maven
         run: |
-          echo "Build del modulo $MODULE_NAME versione $VERSION..."
-          mvn clean package -Psit -DskipTests
+          echo "Build del modulo $MODULE_NAME versione $VERSION con profili: ${{ inputs.maven-profiles }}" # <-- USA INPUT
+          mvn clean package ${{ inputs.maven-profiles }} -DskipTests # <-- USA INPUT
 
       - name: Create Build Info
         run: |
@@ -267,12 +248,9 @@ jobs:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
       ECR_REPOSITORY: auxdromos-${{ needs.extract_module_info.outputs.module_name }}
-      # Definisci qui il nome del parametro SSM per l'Account ID se serve
-      # SSM_AWS_ACCOUNT_ID_PARAM: '/github/common/aws_account_id' # Esempio
     permissions:
       id-token: write
       contents: read
-
     steps:
       - name: Checkout calling repository code
         uses: actions/checkout@v4
@@ -287,14 +265,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }} # Usa la regione statica
-
-      # --- Opzionale: Recupera Account ID se serve per ECR o altro ---
-      # - name: Fetch AWS Account ID from Parameter Store
-      #   id: get-aws-account
-      #   run: |
-      #     AWS_ACCOUNT_ID_VAL=$(aws ssm get-parameter --name "${{ env.SSM_AWS_ACCOUNT_ID_PARAM }}" --query Parameter.Value --output text)
-      #     echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID_VAL" >> $GITHUB_ENV
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -305,8 +276,6 @@ jobs:
 
       - name: Check for Dockerfile and Build/Push
         id: docker_build
-        # env:
-        #   AWS_ACCOUNT_ID: ${{ steps.get-aws-account.outputs.AWS_ACCOUNT_ID }} # Se recuperato sopra
         run: |
           if [ -f "Dockerfile" ]; then
             echo "Dockerfile trovato per $MODULE_NAME, procedo con build e push"
@@ -323,8 +292,6 @@ jobs:
             echo "Building image: ${IMAGE_TAG}"
             DOCKER_BUILD_ARGS=""
             # Potresti recuperare BUILD_ARGS da SSM se necessario
-            # BUILD_ARGS_VAL=$(aws ssm get-parameter --name "/github/common/docker_build_args" --query Parameter.Value --output text)
-            # if [ -n "$BUILD_ARGS_VAL" ]; then DOCKER_BUILD_ARGS="$BUILD_ARGS_VAL"; fi
 
             docker buildx build --push \
               $DOCKER_BUILD_ARGS \
@@ -346,13 +313,10 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      # Definisci qui il nome del parametro SSM per il bucket S3
       SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name' # Esempio
-
     permissions:
       id-token: write
       contents: read
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -373,18 +337,18 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }} # Usa la regione statica
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Fetch S3 Bucket Name from Parameter Store
         id: get-s3-bucket
         run: |
           S3_BUCKET=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
-          echo "S3_BUCKET_NAME=$S3_BUCKET" >> $GITHUB_ENV # Imposta per i prossimi step di questo job
+          if [[ -z "$S3_BUCKET" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
+          echo "S3_BUCKET_NAME=$S3_BUCKET" >> $GITHUB_ENV
 
       - name: Upload to S3
         env:
-          # Rende S3_BUCKET_NAME disponibile allo script
-          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }} # Impostata dallo step precedente
+          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
         run: |
           set -e
           if [[ "${{ github.ref_name }}" == "main" ]]; then
@@ -394,7 +358,7 @@ jobs:
             exit 1
           fi
 
-          S3_URI="s3://${S3_BUCKET_NAME}/${S3_PATH}" # Usa la variabile d'ambiente
+          S3_URI="s3://${S3_BUCKET_NAME}/${S3_PATH}"
           echo "Uploading artifacts for $MODULE_NAME version $VERSION into ${S3_URI}"
 
           JAR_COUNT=$(find artifacts/build -maxdepth 1 -name '*.jar' | wc -l)
@@ -435,29 +399,27 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      # Definisci qui il nome del parametro SSM per il bucket S3
       SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name' # Esempio
-
     permissions:
       id-token: write
       contents: read
-
     steps:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }} # Usa la regione statica
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Fetch S3 Bucket Name from Parameter Store
         id: get-s3-bucket
         run: |
           S3_BUCKET=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
+          if [[ -z "$S3_BUCKET" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
           echo "S3_BUCKET_NAME=$S3_BUCKET" >> $GITHUB_ENV
 
       - name: Create and Upload latest.json
         env:
-          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }} # Impostata dallo step precedente
+          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
         run: |
           set -e
           if [[ "${{ github.ref_name }}" == "main" ]]; then
@@ -468,7 +430,7 @@ jobs:
             exit 1
           fi
 
-          S3_URI="s3://${S3_BUCKET_NAME}/${LATEST_PATH}" # Usa la variabile d'ambiente
+          S3_URI="s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
 
           cat > latest.json <<EOF
           {
@@ -485,157 +447,74 @@ jobs:
           echo "Contenuto di latest.json caricato:"
           cat latest.json
 
-  cleanup_s3:
-    name: Cleanup Old S3 Versions (Main Branch Only)
-    runs-on: ubuntu-latest
-    needs: [extract_module_info, tag_latest]
-    if: github.event_name == 'push' && github.ref_name == 'main'
-    env:
-      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
-      # Definisci qui il nome del parametro SSM per il bucket S3
-      SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name' # Esempio
-
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }} # Usa la regione statica
-
-      - name: Fetch S3 Bucket Name from Parameter Store
-        id: get-s3-bucket
-        run: |
-          S3_BUCKET=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
-          echo "S3_BUCKET_NAME=$S3_BUCKET" >> $GITHUB_ENV
-
-      - name: Run S3 Cleanup Script
-        env:
-          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }} # Impostata dallo step precedente
-        run: |
-          set -e
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            S3_BASE_PATH="${MODULE_NAME}/"
-          else
-            echo "ERRORE: Cleanup S3 configurato solo per il branch 'main'."
-            exit 1
-          fi
-
-          S3_URI_BASE="s3://${S3_BUCKET_NAME}/${S3_BASE_PATH}" # Usa la variabile d'ambiente
-          KEEP_LATEST=5
-
-          echo "Pulizia S3 per $S3_BASE_PATH, mantenendo solo le ultime $KEEP_LATEST versioni..."
-          echo "Elenco contenuti in ${S3_URI_BASE}"
-
-          RAW_PREFIXES=$(aws s3api list-objects-v2 --bucket "${S3_BUCKET_NAME}" --prefix "${S3_BASE_PATH}" --delimiter '/' --query 'CommonPrefixes[].Prefix' --output text)
-          echo "Prefissi grezzi trovati: $RAW_PREFIXES"
-
-          VERSIONS=$(echo "$RAW_PREFIXES" | tr '\t' '\n' | sed "s#^${S3_BASE_PATH}##" | sed 's#/$##')
-          echo "Versioni trovate (candidate): $VERSIONS"
-
-          VALID_VERSIONS=""
-          VERSION_COUNT=0
-          if [[ -n "$VERSIONS" ]]; then
-            VALID_VERSIONS=$(echo "$VERSIONS" | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?$' | grep -v '^latest$' || true)
-            VERSION_COUNT=$(echo "$VALID_VERSIONS" | grep -cv '^$' || true)
-          fi
-          echo "Versioni valide filtrate: $VALID_VERSIONS"
-          echo "Numero di versioni valide: $VERSION_COUNT"
-
-          if [[ $VERSION_COUNT -gt $KEEP_LATEST ]]; then
-            TO_DELETE=$(($VERSION_COUNT - $KEEP_LATEST))
-            echo "Rimozione delle $TO_DELETE versioni più vecchie..."
-            VERSIONS_TO_DELETE=$(echo "$VALID_VERSIONS" | sort -V | head -n $TO_DELETE)
-            echo "Versioni da eliminare: $VERSIONS_TO_DELETE"
-            for OLD_VERSION in $VERSIONS_TO_DELETE; do
-              if [[ -n "$OLD_VERSION" ]]; then
-                echo "Rimozione versione $OLD_VERSION da S3 (${S3_URI_BASE}${OLD_VERSION}/)..."
-                aws s3 rm "${S3_URI_BASE}${OLD_VERSION}/" --recursive
-              fi
-            done
-          else
-            echo "Ci sono $VERSION_COUNT versioni valide, non è necessaria alcuna pulizia (< $((KEEP_LATEST + 1)))."
-          fi
+  # --- JOB cleanup_s3 RIMOSSO ---
+  # Si assume l'uso di S3 Lifecycle Policies
 
   deploy_sit:
     name: Deploy to SIT Environment (Main Branch Only)
     runs-on: ubuntu-latest
-    needs: [extract_module_info, upload_to_s3, build_docker]
+    needs: [extract_module_info, upload_to_s3, build_docker] # Dipende ancora da upload_to_s3 per il deploy di 'distro'
     if: github.event_name == 'push' && github.ref_name == 'main'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      # Definisci i nomi dei parametri SSM per EC2 e S3
-      SSM_EC2_USER_PARAM: '/github/sit/ec2_user' # Esempio
-      SSM_EC2_HOST_PARAM: '/github/sit/ec2_host' # Esempio
-      SSM_EC2_KEY_PARAM: '/github/sit/ec2_private_key' # Esempio (SecureString)
-      SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name' # Esempio (se serve per distro)
-
+      SSM_EC2_USER_PARAM: '/github/sit/ec2_user'
+      SSM_EC2_HOST_PARAM: '/github/sit/ec2_host'
+      SSM_EC2_KEY_PARAM: '/github/sit/ec2_private_key'
+      SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name'
     permissions:
       id-token: write
       contents: read
-
     steps:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }} # Usa la regione statica
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Fetch EC2 Details and S3 Bucket from Parameter Store
         id: fetch-secrets
         run: |
+          set -e
+          echo "Recupero parametri SSM..."
           EC2_USER_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_USER_PARAM }}" --query Parameter.Value --output text)
           EC2_HOST_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_HOST_PARAM }}" --query Parameter.Value --output text)
           EC2_KEY_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_KEY_PARAM }}" --with-decryption --query Parameter.Value --output text)
           S3_BUCKET_VAL=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
           echo "Parametri recuperati."
-          
-          # Controlla se i valori recuperati sono vuoti
+
           echo "Controllo valori recuperati..."
           if [[ -z "$EC2_USER_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_USER_PARAM"; exit 1; fi
           if [[ -z "$EC2_HOST_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_HOST_PARAM"; exit 1; fi
           if [[ -z "$EC2_KEY_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_KEY_PARAM (SecureString)"; exit 1; fi
           if [[ -z "$S3_BUCKET_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
           echo "Valori non vuoti."
-          
-          # Maschera il valore della chiave PRIMA di usarlo o fare output
+
           echo "::add-mask::$EC2_KEY_VAL"
 
-          # Fai l'output del CONTENUTO della chiave per ssh-agent usando un delimitatore
-          # Questo gestisce correttamente le chiavi multi-linea
           echo "SSH_KEY_CONTENT<<EOF" >> $GITHUB_OUTPUT
           echo "$EC2_KEY_VAL" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
-          # Imposta le variabili d'ambiente per gli step successivi
-          echo "DEBUG: Valore EC2_HOST_VAL prima di GITHUB_ENV: ->${EC2_HOST_VAL}<-" # <-- AGGIUNGI QUESTO DEBUG
+
+          echo "DEBUG: Valore EC2_HOST_VAL prima di GITHUB_ENV: ->${EC2_HOST_VAL}<-"
           echo "EC2_USER=$EC2_USER_VAL" >> $GITHUB_ENV
           echo "EC2_HOST=$EC2_HOST_VAL" >> $GITHUB_ENV
           echo "S3_BUCKET_NAME=$S3_BUCKET_VAL" >> $GITHUB_ENV
-          echo "DEBUG: Variabili impostate in GITHUB_ENV." # <-- AGGIUNGI QUESTO DEBUG
-  
-          # Salva la chiave SSH in un file temporaneo
+          echo "DEBUG: Variabili impostate in GITHUB_ENV."
+
           SSH_KEY_PATH=$(mktemp)
           echo "$EC2_KEY_VAL" > "$SSH_KEY_PATH"
           chmod 600 "$SSH_KEY_PATH"
-
-          # Rendi disponibile il path del file per il prossimo step
           echo "SSH_KEY_PATH=$SSH_KEY_PATH" >> $GITHUB_OUTPUT
 
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          # Usa il CONTENUTO della chiave dall'output dello step precedente
           ssh-private-key: ${{ steps.fetch-secrets.outputs.SSH_KEY_CONTENT }}
+
       - name: Add EC2 Host to Known Hosts
-        # Rimuovi il blocco 'env:' qui sotto
         run: |
           echo "DEBUG: Valore EC2_HOST all'inizio dello step: ->${EC2_HOST}<-"
-          # Verifica che EC2_HOST non sia vuoto prima di usarlo
           if [[ -z "$EC2_HOST" ]]; then
             echo "ERRORE: La variabile EC2_HOST è vuota!"
             exit 1
@@ -647,7 +526,6 @@ jobs:
 
       - name: Deploy Script
         env:
-          # Rendi disponibili le variabili recuperate allo script
           S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
           EC2_USER: ${{ env.EC2_USER }}
           EC2_HOST: ${{ env.EC2_HOST }}
@@ -658,7 +536,7 @@ jobs:
           if [ "$MODULE_NAME" = "distro" ]; then
              echo "[Deploy] Modulo distro: scarico gli artifact da S3 e li carico su EC2..."
              LOCAL_TARGET_PATH="/tmp/${MODULE_NAME}-${VERSION}/"
-             S3_SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/" # Usa S3_BUCKET_NAME da env
+             S3_SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
              REMOTE_APP_PATH="/app/${MODULE_NAME}"
              REMOTE_ARTIFACT_PATH="${REMOTE_APP_PATH}/artifacts"
 
@@ -671,7 +549,7 @@ jobs:
              echo "[Deploy] Download da S3 completato. Verifico contenuto locale in ${LOCAL_TARGET_PATH}:"; ls -lR "${LOCAL_TARGET_PATH}"
              if [ -z "$(ls -A ${LOCAL_TARGET_PATH})" ]; then echo "[Deploy] ERRORE: La directory ${LOCAL_TARGET_PATH} è vuota."; exit 1; fi
 
-             echo "[Deploy] Eseguo comandi remoti su ${EC2_USER}@${EC2_HOST}..." # Usa EC2_USER/HOST da env
+             echo "[Deploy] Eseguo comandi remoti su ${EC2_USER}@${EC2_HOST}..."
              ssh ${EC2_USER}@${EC2_HOST} "
                set -e
                echo '[Deploy Remote] Pulisco i vecchi artifact...'
@@ -690,9 +568,12 @@ jobs:
                ZIP_FILE=\"${MODULE_NAME}-${VERSION}.zip\"
                if ls \$ZIP_FILE >/dev/null 2>&1; then
                  echo '[Deploy Remote] ZIP trovato. Estraggo...'
-                 # Assicurati che unzip sia installato
                  sudo apt-get update > /dev/null && sudo apt-get install -y unzip > /dev/null || echo 'unzip già installato o errore installazione'
-                 unzip -o \$ZIP_FILE || { echo '[Deploy Remote] ERRORE: unzip fallito.'; exit 1; }
+                 unzip -o \$ZIP_FILE
+                 if [ \$? -ne 0 ]; then # <-- Modifica per sintassi YAML
+                   echo '[Deploy Remote] ERRORE: unzip fallito.'
+                   exit 1
+                 fi
                  echo '[Deploy Remote] Rinomino ZIP in ${MODULE_NAME}-last.zip'
                  mv \$ZIP_FILE ${MODULE_NAME}-last.zip
                else
@@ -708,7 +589,7 @@ jobs:
              REMOTE_APP_PATH="/app/${MODULE_NAME}"
              REMOTE_DISTRO_SCRIPT_PATH="/app/distro/artifacts/aws/sit/script/deploy_module.sh"
 
-             ssh ${EC2_USER}@${EC2_HOST} " # Usa EC2_USER/HOST da env
+             ssh ${EC2_USER}@${EC2_HOST} "
                set -e
                echo '[Deploy Remote] Assicuro esistenza directory ${REMOTE_APP_PATH}'
                sudo mkdir -p ${REMOTE_APP_PATH}
@@ -727,7 +608,6 @@ jobs:
           fi
           echo "Deployment completato per $MODULE_NAME."
 
-      # --- STEP DI PULIZIA CHIAVE SSH ---
       - name: Cleanup SSH Key File
-        if: always() # Esegui sempre, anche se il deploy fallisce
+        if: always()
         run: rm -f "${{ steps.fetch-secrets.outputs.SSH_KEY_PATH }}"
