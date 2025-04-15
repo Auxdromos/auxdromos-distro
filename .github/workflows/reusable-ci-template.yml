@@ -616,11 +616,16 @@ jobs:
           # Usa il CONTENUTO della chiave dall'output dello step precedente
           ssh-private-key: ${{ steps.fetch-secrets.outputs.SSH_KEY_CONTENT }}
       - name: Add EC2 Host to Known Hosts
-        env:
-          EC2_HOST: ${{ env.EC2_HOST }} # Impostata da fetch-secrets
+        # Rimuovi il blocco 'env:' qui sotto
         run: |
+          # Verifica che EC2_HOST non sia vuoto prima di usarlo
+          if [[ -z "$EC2_HOST" ]]; then
+            echo "ERRORE: La variabile EC2_HOST è vuota!"
+            exit 1
+          fi
           mkdir -p ~/.ssh
-          ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts # Usa la variabile d'ambiente
+          echo "Aggiungo host $EC2_HOST a known_hosts"
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy Script
