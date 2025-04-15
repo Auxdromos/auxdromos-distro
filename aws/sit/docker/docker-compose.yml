@@ -76,6 +76,7 @@ services:
     ports:
       # Usa le variabili d'ambiente esportate dallo script
       - "${EXTERNAL_PORT:-8082}:${INTERNAL_PORT:-8080}" # Aggiunti default
+      - "9090:9000"
     environment:
       # Queste verranno lette dall'ambiente esterno (esportate dallo script)
       KC_DB: ${KC_DB:-postgres}
