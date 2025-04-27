@@ -300,9 +300,10 @@ jobs:
             # Potresti recuperare BUILD_ARGS da SSM se necessario
 
             docker buildx build --push \
-              $DOCKER_BUILD_ARGS \
-              -t "${IMAGE_TAG}" \
-              --platform linux/amd64 .
+            --build-arg GH_PACKAGES_TOKEN=${{ secrets.GITHUB_PACKAGES_TOKEN }} \
+            --build-arg GITHUB_ACTOR=${{ github.actor }} \
+            -t "${IMAGE_TAG}" \
+            --platform linux/amd64 .
 
             echo "Immagine Docker caricata con successo: ${IMAGE_TAG}"
             echo "docker_image_pushed=true" >> $GITHUB_OUTPUT
