@@ -24,7 +24,7 @@ on:
 
     # Segreti richiesti dal workflow
     secrets:
-      GITHUB_TOKEN:
+      GH_PACKAGES_TOKEN:
         description: 'Token GitHub per accedere ai packages privati'
         required: false
 
@@ -168,7 +168,7 @@ jobs:
               <server>
                 <id>github</id>
                 <username>x-access-token</username>
-                <password>\${env.GITHUB_TOKEN}</password>
+                <password>\${env.GH_PACKAGES_TOKEN}</password>
               </server>
             </servers>
           </settings>
@@ -177,7 +177,7 @@ jobs:
 
       - name: Build with Maven
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
         run: |
           echo "Build del modulo $MODULE_NAME versione $VERSION con profili: ${{ inputs.maven-profiles }}"
           
@@ -262,7 +262,7 @@ jobs:
               <server>
                 <id>github</id>
                 <username>x-access-token</username>
-                <password>\${env.GITHUB_TOKEN}</password>
+                <password>\${env.GH_PACKAGES_TOKEN}</password>
               </server>
             </servers>
           </settings>
@@ -277,7 +277,7 @@ jobs:
 
       - name: Run Tests with Maven
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
         run: |
           echo "Test del modulo $MODULE_NAME versione $VERSION..."
           
