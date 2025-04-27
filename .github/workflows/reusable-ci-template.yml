@@ -16,17 +16,12 @@ on:
         required: false
         type: string
         default: '-Psit' # Default per mantenere comportamento precedente
-      github-packages:
-        description: 'Abilita l''uso di dipendenze da GitHub Packages'
-        required: false
-        type: boolean
-        default: false
 
-    # Segreti richiesti dal workflow
+    # Non sono più richiesti segreti AWS/EC2 dal chiamante
     secrets:
-      GH_PACKAGES_TOKEN:
-        description: 'Token GitHub per accedere ai packages privati'
+      GITHUB_PACKAGES_TOKEN:
         required: false
+        description: 'Token per accedere ai repository GitHub privati'
 
 # Imposta la regione AWS staticamente
 env:
@@ -39,8 +34,6 @@ jobs:
     outputs:
       module_name: ${{ steps.extract.outputs.MODULE_NAME }}
       version: ${{ steps.extract.outputs.VERSION }}
-      has_settings_xml: ${{ steps.check_settings.outputs.HAS_SETTINGS_XML }}
-      settings_xml_path: ${{ steps.check_settings.outputs.SETTINGS_XML_PATH }}
     steps:
       - name: Checkout calling repository code
         uses: actions/checkout@v4
@@ -70,27 +63,6 @@ jobs:
           echo "Modulo $MODULE_NAME, Versione $VERSION"
           echo "MODULE_NAME=$MODULE_NAME" >> $GITHUB_OUTPUT
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          
-      - name: Check for settings.xml
-        id: check_settings
-        run: |
-          echo "Verifica presenza di settings.xml personalizzato..."
-          
-          # Controlla se esiste un settings.xml nella directory .mvn
-          if [ -f ".mvn/settings.xml" ]; then
-            echo "File .mvn/settings.xml trovato"
-            echo "HAS_SETTINGS_XML=true" >> $GITHUB_OUTPUT
-            echo "SETTINGS_XML_PATH=.mvn/settings.xml" >> $GITHUB_OUTPUT
-          # Controlla se esiste un settings.xml nella directory principale
-          elif [ -f "settings.xml" ]; then
-            echo "File settings.xml trovato nella directory principale"
-            echo "HAS_SETTINGS_XML=true" >> $GITHUB_OUTPUT
-            echo "SETTINGS_XML_PATH=settings.xml" >> $GITHUB_OUTPUT
-          else
-            echo "Nessun file settings.xml personalizzato trovato"
-            echo "HAS_SETTINGS_XML=false" >> $GITHUB_OUTPUT
-            echo "SETTINGS_XML_PATH=" >> $GITHUB_OUTPUT
-          fi
 
   check_version:
     name: Check Version Existence (Main Branch Only)
@@ -145,8 +117,6 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      HAS_SETTINGS_XML: ${{ needs.extract_module_info.outputs.has_settings_xml }}
-      SETTINGS_XML_PATH: ${{ needs.extract_module_info.outputs.settings_xml_path }}
     steps:
       - name: Checkout calling repository code
         uses: actions/checkout@v4
@@ -157,50 +127,14 @@ jobs:
           java-version: ${{ inputs.java-version }}
           distribution: 'corretto'
           cache: 'maven'
-          
-      - name: Configure Maven Settings
-        run: |
-          if [[ "$HAS_SETTINGS_XML" == "true" && -n "$SETTINGS_XML_PATH" ]]; then
-            echo "Utilizzo settings.xml personalizzato dal repository: $SETTINGS_XML_PATH"
-            mkdir -p ~/.m2
-            cp "$SETTINGS_XML_PATH" ~/.m2/settings.xml
-            echo "Settings.xml copiato in ~/.m2/settings.xml"
-          elif [[ "${{ inputs.github-packages }}" == "true" ]]; then
-            echo "Configurazione Maven per GitHub Packages (settings.xml non trovato nel repository)..."
-            mkdir -p ~/.m2
-            cat > ~/.m2/settings.xml << EOF
-          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
-                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
-                                       http://maven.apache.org/xsd/settings-1.0.0.xsd">
-            <servers>
-              <server>
-                <id>github</id>
-                <username>x-access-token</username>
-                <password>\${env.GH_PACKAGES_TOKEN}</password>
-              </server>
-            </servers>
-          </settings>
-          EOF
-            echo "Maven configurato per GitHub Packages con settings.xml predefinito."
-          else
-            echo "Nessuna configurazione Maven speciale necessaria."
-          fi
 
       - name: Build with Maven
         env:
-          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GITHUB_PACKAGES_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
         run: |
           echo "Build del modulo $MODULE_NAME versione $VERSION con profili: ${{ inputs.maven-profiles }}"
-          
-          # Verifica se usare GitHub Packages
-          if [[ "${{ inputs.github-packages }}" == "true" || "$HAS_SETTINGS_XML" == "true" ]]; then
-            echo "Utilizzo configurazione per GitHub Packages..."
-            mvn clean package ${{ inputs.maven-profiles }} -DskipTests
-          else
-            echo "Build standard senza GitHub Packages..."
-            mvn clean package ${{ inputs.maven-profiles }} -DskipTests
-          fi
+          mvn clean package ${{ inputs.maven-profiles }} -DskipTests --settings settings.xml
 
       - name: Create Build Info
         run: |
@@ -234,8 +168,6 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      HAS_SETTINGS_XML: ${{ needs.extract_module_info.outputs.has_settings_xml }}
-      SETTINGS_XML_PATH: ${{ needs.extract_module_info.outputs.settings_xml_path }}
     steps:
       - name: Checkout calling repository code
         uses: actions/checkout@v4
@@ -246,35 +178,6 @@ jobs:
           java-version: ${{ inputs.java-version }}
           distribution: 'corretto'
           cache: 'maven'
-          
-      - name: Configure Maven Settings
-        run: |
-          if [[ "$HAS_SETTINGS_XML" == "true" && -n "$SETTINGS_XML_PATH" ]]; then
-            echo "Utilizzo settings.xml personalizzato dal repository: $SETTINGS_XML_PATH"
-            mkdir -p ~/.m2
-            cp "$SETTINGS_XML_PATH" ~/.m2/settings.xml
-            echo "Settings.xml copiato in ~/.m2/settings.xml"
-          elif [[ "${{ inputs.github-packages }}" == "true" ]]; then
-            echo "Configurazione Maven per GitHub Packages (settings.xml non trovato nel repository)..."
-            mkdir -p ~/.m2
-            cat > ~/.m2/settings.xml << EOF
-          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
-                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
-                                       http://maven.apache.org/xsd/settings-1.0.0.xsd">
-            <servers>
-              <server>
-                <id>github</id>
-                <username>x-access-token</username>
-                <password>\${env.GH_PACKAGES_TOKEN}</password>
-              </server>
-            </servers>
-          </settings>
-          EOF
-            echo "Maven configurato per GitHub Packages con settings.xml predefinito."
-          else
-            echo "Nessuna configurazione Maven speciale necessaria."
-          fi
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -283,19 +186,9 @@ jobs:
           path: artifacts/build
 
       - name: Run Tests with Maven
-        env:
-          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
         run: |
           echo "Test del modulo $MODULE_NAME versione $VERSION..."
-          
-          # Verifica se usare GitHub Packages
-          if [[ "${{ inputs.github-packages }}" == "true" || "$HAS_SETTINGS_XML" == "true" ]]; then
-            echo "Utilizzo configurazione per GitHub Packages nei test..."
-            mvn test
-          else
-            echo "Test standard senza GitHub Packages..."
-            mvn test
-          fi
+          mvn test
 
   package_configs:
     name: Package Configuration Files (Main Branch Only)

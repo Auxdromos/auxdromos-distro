@@ -23,7 +23,6 @@ jobs:
 
     with:
       java-version: '17'
-      github-packages: true
     secrets:
-      GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+      GITHUB_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
 

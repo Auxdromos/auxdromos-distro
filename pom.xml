@@ -17,10 +17,7 @@
     <repositories>
         <repository>
             <id>github</id>
-            <url>https://maven.pkg.github.com/Auxdromos/notify-spring-boot-starter</url>
-            <snapshots>
-                <enabled>true</enabled>
-            </snapshots>
+            <url>https://maven.pkg.github.com/Auxdromos/*</url>
         </repository>
     </repositories>
 
