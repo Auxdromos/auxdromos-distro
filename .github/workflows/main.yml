@@ -23,9 +23,6 @@ jobs:
 
     with:
       java-version: '17'
-
-    # Rimuovi tutti i segreti AWS/EC2. Non serve più passarli.
-    secrets: {}
-    # Oppure, se hai definito i segreti a livello di repository/organizzazione
-    # e vuoi passare solo quelli che potrebbero servire in futuro (ma non ora):
-    # secrets: inherit
+      github-packages: true
+    secrets:
+      GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
