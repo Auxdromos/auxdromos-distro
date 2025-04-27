@@ -6,7 +6,7 @@
 
     <groupId>com.auxdromos</groupId>
     <artifactId>distro</artifactId>
-    <version>1.89</version>
+    <version>1.90</version>
     <packaging>jar</packaging>
 
     <properties>
@@ -17,7 +17,7 @@
     <repositories>
         <repository>
             <id>github</id>
-            <url>https://maven.pkg.github.com/Auxdromos/*</url>
+            <url>https://maven.pkg.github.com/Auxdromos/notify-spring-boot-starter</url>
             <snapshots>
                 <enabled>true</enabled>
             </snapshots>
