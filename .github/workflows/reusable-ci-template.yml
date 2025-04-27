@@ -263,11 +263,10 @@ jobs:
           echo "Test del modulo $MODULE_NAME versione $VERSION..."
           
           # Verifica se usare GitHub Packages
-          if [[ "${{ inputs.github-packages }}" == "true" || "$HAS_SETTINGS_XML" == "true" ]]; then
-            echo "Utilizzo configurazione per GitHub Packages nei test..."
+          echo "Utilizzo configurazione per GitHub Packages nei test..."
 
-            echo "Utilizzo settings.xml dalla directory principale"
-            mvn test --settings settings.xml
+          echo "Utilizzo settings.xml dalla directory principale"
+          mvn test --settings settings.xml
 
   package_configs:
     name: Package Configuration Files (Main Branch Only)
