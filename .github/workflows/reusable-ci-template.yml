@@ -121,6 +121,14 @@ jobs:
       - name: Checkout calling repository code
         uses: actions/checkout@v4
 
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
@@ -171,6 +179,14 @@ jobs:
     steps:
       - name: Checkout calling repository code
         uses: actions/checkout@v4
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -618,3 +634,130 @@ jobs:
       - name: Cleanup SSH Key File
         if: always()
         run: rm -f "${{ steps.fetch-secrets.outputs.SSH_KEY_PATH }}"
+
+  slack_notification:
+    name: Send Slack Notification
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, build, test, upload_to_s3, deploy_sit]
+    if: always() # Esegui sempre, anche se i job precedenti falliscono
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+      SSM_SLACK_WEBHOOK_PARAM: '/github/common/slack_webhook_url' # Parametro SSM per il webhook Slack
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Fetch Slack Webhook URL from Parameter Store
+        id: get-slack-webhook
+        run: |
+          SLACK_WEBHOOK=$(aws ssm get-parameter --name "${{ env.SSM_SLACK_WEBHOOK_PARAM }}" --with-decryption --query Parameter.Value --output text)
+          if [[ -z "$SLACK_WEBHOOK" ]]; then 
+            echo "AVVISO: Webhook Slack non configurato in Parameter Store"
+            echo "SLACK_WEBHOOK_CONFIGURED=false" >> $GITHUB_OUTPUT
+          else
+            echo "::add-mask::$SLACK_WEBHOOK"
+            echo "SLACK_WEBHOOK_URL=$SLACK_WEBHOOK" >> $GITHUB_ENV
+            echo "SLACK_WEBHOOK_CONFIGURED=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare Slack Message
+        id: slack-message
+        if: steps.get-slack-webhook.outputs.SLACK_WEBHOOK_CONFIGURED == 'true'
+        run: |
+          # Determina lo stato complessivo del workflow
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "status=:x: Fallito" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+          elif [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "status=:warning: Annullato" >> $GITHUB_OUTPUT
+            echo "color=warning" >> $GITHUB_OUTPUT
+          else
+            echo "status=:white_check_mark: Successo" >> $GITHUB_OUTPUT
+            echo "color=good" >> $GITHUB_OUTPUT
+          fi
+          
+          # Crea un riepilogo dei job
+          echo "build_status=Build: ${{ needs.build.result }}" >> $GITHUB_OUTPUT
+          echo "test_status=Test: ${{ needs.test.result }}" >> $GITHUB_OUTPUT
+          
+          # Aggiungi info sul deploy solo se è stato eseguito
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "deploy_status=Deploy SIT: ${{ needs.deploy_sit.result }}" >> $GITHUB_OUTPUT
+            echo "docker_status=Docker Build: ${{ needs.build_docker.result || 'skipped' }}" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_status=" >> $GITHUB_OUTPUT
+            echo "docker_status=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack Notification
+        if: steps.get-slack-webhook.outputs.SLACK_WEBHOOK_CONFIGURED == 'true'
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.slack-message.outputs.color }}",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "${{ steps.slack-message.outputs.status }} - ${{ env.MODULE_NAME }} v${{ env.VERSION }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Repository:*\n${{ github.repository }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Branch:*\n${{ github.ref_name }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Commit:*\n${{ github.sha }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Trigger:*\n${{ github.event_name }}"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Stato Job:*\n${{ steps.slack-message.outputs.build_status }}\n${{ steps.slack-message.outputs.test_status }}\n${{ steps.slack-message.outputs.deploy_status }}\n${{ steps.slack-message.outputs.docker_status }}"
+                      }
+                    },
+                    {
+                      "type": "actions",
+                      "elements": [
+                        {
+                          "type": "button",
+                          "text": {
+                            "type": "plain_text",
+                            "text": "Visualizza Workflow"
+                          },
+                          "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
