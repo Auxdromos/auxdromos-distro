@@ -31,6 +31,7 @@ jobs:
   extract_module_info:
     name: Prepare - Extract Module Info
     runs-on: ubuntu-latest
+    container: maven:3.8.5-openjdk-17
     outputs:
       module_name: ${{ steps.extract.outputs.MODULE_NAME }}
       version: ${{ steps.extract.outputs.VERSION }}
@@ -99,16 +100,20 @@ jobs:
           fi
 
           ECR_REPO_NAME="auxdromos-$MODULE_NAME"
-          echo "Controllo ECR per repository $ECR_REPO_NAME e tag $VERSION..."
-          if aws ecr describe-images --repository-name "$ECR_REPO_NAME" --image-ids imageTag="$VERSION" --region "$AWS_REGION" > /dev/null 2>&1; then
-            echo "Errore: La versione '$VERSION' è già presente su ECR per il modulo '$MODULE_NAME'."
-            exit 1
+          echo "Controllo se il repository ECR '$ECR_REPO_NAME' esiste..."
+          if ! aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION" > /dev/null 2>&1; then
+            echo "ATTENZIONE: Repository ECR '$ECR_REPO_NAME' non esiste ancora; verrà creato più tardi."
           else
-              if ! aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION" > /dev/null 2>&1; then
-                  echo "Nota: Repository ECR '$ECR_REPO_NAME' non esiste ancora (verrà creato nel job docker)."
-              fi
-              echo "Versione '$VERSION' valida per main. Procedo..."
+            echo "Repository ECR trovato. Controllo se la versione '$VERSION' è già presente..."
+            if aws ecr describe-images --repository-name "$ECR_REPO_NAME" \
+                                      --image-ids imageTag="$VERSION" \
+                                      --region "$AWS_REGION" > /dev/null 2>&1; then
+              echo "ERRORE: L'immagine '$ECR_REPO_NAME:$VERSION' è già presente."
+              exit 1
+            fi
           fi
+
+          echo "Versione '$VERSION' valida per 'main'. Procedo..."
 
   build:
     name: Build Project
@@ -643,7 +648,7 @@ jobs:
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      SSM_SLACK_WEBHOOK_PARAM: '/github/common/slack_webhook_url' # Parametro SSM per il webhook Slack
+      SSM_SLACK_WEBHOOK_PARAM: '/auxdromos/sit/global/slack_webhook_url' # Parametro SSM per il webhook Slack
     permissions:
       id-token: write
       contents: read
