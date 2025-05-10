@@ -192,6 +192,33 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  print-service:
+    # Uses environment variables for tag, account, and region
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-print-service:${BACKEND_IMAGE_TAG:-latest}
+    container_name: auxdromos-print-service
+    ports:
+      # Uses environment variables exported by the script
+      - "${EXTERNAL_PORT:-8085}:${INTERNAL_PORT:-8085}" # Added defaults
+    environment:
+      # These are read from external environment (exported by the script)
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888" # Fixed
+      PROFILE: "${PROFILE:-sit}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
+      SPRING_APPLICATION_NAME: "backend" # Fixed
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0" # Fixed
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   auxdromos-network:
     external: true
