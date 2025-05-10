@@ -23,6 +23,6 @@ jobs:
 
     with:
       java-version: '17'
+      artifact-retention-days: 7  # Imposta la soglia di età a 14 giorni
     secrets:
       GITHUB_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
-

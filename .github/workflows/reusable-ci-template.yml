@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: '-Psit' # Default per mantenere comportamento precedente
+      artifact-retention-days:
+        description: 'Numero di giorni dopo i quali gli artifact vengono eliminati'
+        required: false
+        type: number
+        default: 7
 
     # Non sono più richiesti segreti AWS/EC2 dal chiamante
     secrets:
@@ -688,11 +693,11 @@ jobs:
             echo "status=:white_check_mark: Successo" >> $GITHUB_OUTPUT
             echo "color=good" >> $GITHUB_OUTPUT
           fi
-          
+
           # Crea un riepilogo dei job
           echo "build_status=Build: ${{ needs.build.result }}" >> $GITHUB_OUTPUT
           echo "test_status=Test: ${{ needs.test.result }}" >> $GITHUB_OUTPUT
-          
+
           # Aggiungi info sul deploy solo se è stato eseguito
           if [[ "${{ github.ref_name }}" == "main" ]]; then
             echo "deploy_status=Deploy SIT: ${{ needs.deploy_sit.result }}" >> $GITHUB_OUTPUT
@@ -767,3 +772,88 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
           SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  cleanup_artifacts:
+    name: Cleanup Old Artifacts
+    runs-on: ubuntu-latest
+    needs: [slack_notification]
+    if: always() # Esegui sempre, anche se i job precedenti falliscono
+    permissions:
+      actions: write # Necessario per eliminare gli artifact
+    # Questo job automatizza la rimozione degli artifact più vecchi di un certo numero di giorni
+    # La soglia di età può essere configurata tramite il parametro 'artifact-retention-days'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup Old Artifacts
+        run: |
+          echo "=== Inizia la pulizia degli artifact più vecchi ==="
+
+          # Imposta la soglia di età in giorni (gli artifact più vecchi di questa soglia verranno eliminati)
+          DAYS_OLD=${{ inputs.artifact-retention-days }}
+          echo "Soglia di età impostata a $DAYS_OLD giorni"
+
+          # Ottieni il token GitHub per l'API
+          TOKEN="${{ github.token }}"
+
+          # Ottieni l'ID del repository
+          REPO_ID=$(curl -s -H "Authorization: token $TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}" | \
+            jq -r '.id')
+
+          echo "Repository ID: $REPO_ID"
+          echo "Repository: ${{ github.repository }}"
+
+          # Calcola la data limite (oggi - DAYS_OLD)
+          CUTOFF_DATE=$(date -d "$DAYS_OLD days ago" +%s)
+          CUTOFF_DATE_HUMAN=$(date -d "$DAYS_OLD days ago" "+%Y-%m-%d")
+          echo "Data limite: $CUTOFF_DATE_HUMAN (timestamp: $CUTOFF_DATE)"
+
+          echo "Recupero lista degli artifact dal repository..."
+          # Ottieni la lista degli artifact
+          ARTIFACTS=$(curl -s -H "Authorization: token $TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=100")
+
+          TOTAL_ARTIFACTS=$(echo "$ARTIFACTS" | jq -r '.total_count')
+          echo "Totale artifact trovati: $TOTAL_ARTIFACTS"
+
+          echo "Identificazione degli artifact più vecchi della soglia..."
+          # Estrai gli ID degli artifact più vecchi della soglia
+          OLD_ARTIFACT_IDS=$(echo "$ARTIFACTS" | jq -r ".artifacts[] | 
+            select(.created_at | fromdateiso8601 | . < $CUTOFF_DATE) | 
+            .id")
+
+          # Conta quanti artifact verranno eliminati
+          COUNT=$(echo "$OLD_ARTIFACT_IDS" | grep -v '^$' | wc -l)
+          echo "Trovati $COUNT artifact più vecchi di $DAYS_OLD giorni da eliminare"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Nessun artifact da eliminare. Operazione completata."
+            exit 0
+          fi
+
+          echo "=== Inizio eliminazione degli artifact ==="
+          # Elimina gli artifact più vecchi
+          SUCCESS_COUNT=0
+          FAIL_COUNT=0
+
+          for ARTIFACT_ID in $OLD_ARTIFACT_IDS; do
+            echo "Eliminazione artifact ID: $ARTIFACT_ID"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "Authorization: token $TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID")
+
+            if [ "$HTTP_CODE" -eq 204 ] || [ "$HTTP_CODE" -eq 200 ]; then
+              echo "✓ Artifact $ARTIFACT_ID eliminato con successo (HTTP $HTTP_CODE)"
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            else
+              echo "✗ Errore nell'eliminazione dell'artifact $ARTIFACT_ID (HTTP $HTTP_CODE)"
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+          done
+
+          echo "=== Riepilogo pulizia artifact ==="
+          echo "Artifact elaborati: $COUNT"
+          echo "Eliminati con successo: $SUCCESS_COUNT"
+          echo "Errori: $FAIL_COUNT"
+          echo "=== Pulizia degli artifact completata ==="
