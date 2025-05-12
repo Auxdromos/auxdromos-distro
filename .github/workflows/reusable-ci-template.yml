@@ -2,6 +2,11 @@
 # Workflow riutilizzabile per build, test, package, deploy di moduli AuxDromos
 name: Reusable AuxDromos CI/CD
 
+permissions:
+  actions: write
+  id-token: write
+  contents: read
+
 on:
   workflow_call:
     # Definisci gli input che il workflow chiamante può passare
