@@ -194,7 +194,7 @@ services:
 
   print-service:
     # Uses environment variables for tag, account, and region
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-print-service:${BACKEND_IMAGE_TAG:-latest}
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-print-service:${PRINT_SERVICE_IMAGE_TAG:-latest}
     container_name: auxdromos-print-service
     ports:
       # Uses environment variables exported by the script
@@ -204,7 +204,7 @@ services:
       SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888" # Fixed
       PROFILE: "${PROFILE:-sit}"
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
-      SPRING_APPLICATION_NAME: "backend" # Fixed
+      SPRING_APPLICATION_NAME: "print-service" # Fixed
       JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0" # Fixed
     deploy:
       resources:
