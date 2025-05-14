@@ -138,6 +138,7 @@ deploy_module() {
 
       # --- ESPORTA LA VARIABILE D'AMBIENTE PER IL TAG ---
       typeset -u upper_modulo="${module_to_deploy}" # Converte in maiuscolo
+      upper_modulo="${upper_modulo//-/_}" # Replace dashes with underscores
       local DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
       export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
       echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
