@@ -54,8 +54,6 @@ jobs:
         run: |
           echo "Estrazione delle informazioni dal pom.xml del repository chiamante..."
           if [ -f "pom.xml" ]; then
-            echo "Installazione Maven per estrazione..."
-            sudo apt-get update && sudo apt-get install -y openjdk-${{ inputs.java-version }}-jdk maven
             echo "Usando Maven per estrarre artifactId e version..."
             MODULE_NAME=$(mvn help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
             VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
