@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  config:
+    command: >
+      bash -c "java -XX:ReservedCodeCacheSize=64M -Xss512K -XX:MaxMetaspaceSize=128M -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=1 -Xmx256m -jar app.jar"
+
+  rdbms:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=1 -Xmx576m -jar app.jar"
+
+  idp:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=1 -Xmx576m -jar app.jar"
+
+  backend:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=1 -Xmx768m -jar app.jar"
+
+  gateway:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=1 -Xmx576m -jar app.jar"
+
+  print-service:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=1 -Xmx768m -jar app.jar"

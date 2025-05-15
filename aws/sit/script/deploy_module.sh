@@ -180,6 +180,7 @@ deploy_module() {
   # Usa le variabili esportate da fetch_and_export_params e quelle del tag
   if ! docker-compose -p "${PROJECT_NAME}" \
                  --file "${compose_file_path}" \
+                 -f "docker-compose.override.yml" \
                  up -d $module_to_deploy; then
       echo "Errore durante l'esecuzione di 'docker-compose up' per ${module_to_deploy}."
       # Mostra log in caso di fallimento dell'up

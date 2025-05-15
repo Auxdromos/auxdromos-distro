@@ -783,6 +783,8 @@ jobs:
     if: always() # Esegui sempre, anche se i job precedenti falliscono
     permissions:
       actions: write # Necessario per eliminare gli artifact
+    secrets:
+      GITHUB_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
     # Questo job automatizza la rimozione degli artifact più vecchi di un certo numero di giorni
     # La soglia di età può essere configurata tramite il parametro 'artifact-retention-days'
     steps:
@@ -809,8 +811,12 @@ jobs:
           echo "Repository: ${{ github.repository }}"
 
           # Calcola la data limite (oggi - DAYS_OLD)
-          CUTOFF_DATE=$(date -d "$DAYS_OLD days ago" +%s)
-          CUTOFF_DATE_HUMAN=$(date -d "$DAYS_OLD days ago" "+%Y-%m-%d")
+          # Usa una soluzione più portabile per calcolare la data limite
+          CURRENT_DATE=$(date +%s)
+          SECONDS_IN_DAY=86400
+          CUTOFF_DATE=$((CURRENT_DATE - (DAYS_OLD * SECONDS_IN_DAY)))
+          # Usa date con formato compatibile con Ubuntu
+          CUTOFF_DATE_HUMAN=$(date -u --date="@$CUTOFF_DATE" "+%Y-%m-%d")
           echo "Data limite: $CUTOFF_DATE_HUMAN (timestamp: $CUTOFF_DATE)"
 
           echo "Recupero lista degli artifact dal repository..."
@@ -823,8 +829,9 @@ jobs:
 
           echo "Identificazione degli artifact più vecchi della soglia..."
           # Estrai gli ID degli artifact più vecchi della soglia
+          # Usa strptime per convertire la data ISO 8601 in timestamp Unix
           OLD_ARTIFACT_IDS=$(echo "$ARTIFACTS" | jq -r ".artifacts[] | 
-            select(.created_at | fromdateiso8601 | . < $CUTOFF_DATE) | 
+            select((.created_at | strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime) < $CUTOFF_DATE) | 
             .id")
 
           # Conta quanti artifact verranno eliminati
