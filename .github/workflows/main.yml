@@ -16,12 +16,10 @@ jobs:
   call-reusable-pipeline:
     name: Run Shared AuxDromos CI/CD
     uses: ./.github/workflows/reusable-ci-template.yml
-
     permissions:
       id-token: write
       contents: read
       actions: write
-
     with:
       java-version: '17'
       artifact-retention-days: 7  # Imposta la soglia di età a 14 giorni
