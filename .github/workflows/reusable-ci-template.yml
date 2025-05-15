@@ -786,9 +786,6 @@ jobs:
     # Questo job automatizza la rimozione degli artifact più vecchi di un certo numero di giorni
     # La soglia di età può essere configurata tramite il parametro 'artifact-retention-days'
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Cleanup Old Artifacts
         run: |
           echo "=== Inizia la pulizia degli artifact più vecchi ==="
