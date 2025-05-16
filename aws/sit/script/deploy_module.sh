@@ -35,7 +35,7 @@ fetch_and_export_params() {
       echo "Esportazione parametro: ${param_name}"
       echo "export ${param_name}='${value}'" >> "$TEMP_ENV_FILE"
     done
-  
+
   # Source the temporary file to set variables in current environment
   if [ -f "$TEMP_ENV_FILE" ] && [ -s "$TEMP_ENV_FILE" ]; then
     source "$TEMP_ENV_FILE"
@@ -141,7 +141,7 @@ deploy_module() {
       upper_modulo="${upper_modulo//-/_}" # Replace dashes with underscores
       local DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
       export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
-      echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
+      echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}" >&2
 
       # --- Rinnova l'autenticazione AWS ECR ---
       echo "Rinnovamento autenticazione AWS ECR..."
@@ -290,10 +290,10 @@ if [[ -n "${AWS_DEFAULT_REGION}" ]]; then
 else
     # Se non è impostata, prova a determinarla dai metadati EC2
     echo "AWS_DEFAULT_REGION non impostata. Tentativo di rilevare la regione dai metadati EC2..."
-    
+
     # Usa un timeout ridotto per evitare attese lunghe in ambiente locale
     EC2_REGION=$(curl -s --connect-timeout 1 --max-time 1 http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region 2>/dev/null)
-    
+
     # Verifica se la regione è stata recuperata con successo
     if [[ -n "$EC2_REGION" && "$EC2_REGION" != "null" ]]; then
         echo "Regione rilevata dai metadati EC2: ${EC2_REGION}"
@@ -302,7 +302,7 @@ else
         echo "Attenzione: Impossibile determinare la regione dai metadati EC2."
         echo "Impostazione della regione predefinita a us-east-1."
         echo "Per utilizzare una regione diversa, impostare la variabile d'ambiente AWS_DEFAULT_REGION."
-        
+
         # Imposta us-east-1 come default
         AWS_DEFAULT_REGION="us-east-1"
     fi

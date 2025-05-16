@@ -155,6 +155,7 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
         run: |
           echo "Build del modulo $MODULE_NAME versione $VERSION con profili: ${{ inputs.maven-profiles }}"
+          echo "Using GitHub token for authentication with GitHub Packages"
           mvn clean package ${{ inputs.maven-profiles }} -DskipTests --settings settings.xml
 
       - name: Create Build Info
