@@ -121,18 +121,32 @@ deploy_module() {
       local REPO_NAME="auxdromos-${module_to_deploy}"
       local FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
       echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
+      # Versione migliorata che gestisce correttamente i tag "None" e i caratteri di nuova riga
       LATEST_TAG=$(aws ecr describe-images \
                     --repository-name "${REPO_NAME}" \
                     --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
                     --output text \
-                    --region "${AWS_DEFAULT_REGION}" 2>/dev/null)
+                    --region "${AWS_DEFAULT_REGION}" 2>/dev/null | grep -v "None" | tr -d '\n')
 
-      # Gestione errore migliorata
-      if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "None" ]; then
-          echo "Errore: Impossibile trovare un tag valido per il repository ${REPO_NAME} in ECR nella regione ${AWS_DEFAULT_REGION}."
-          echo "Verifica che il repository esista e contenga immagini taggate."
-          return 1 # Usa return invece di exit
+      # Verifica se il tag è vuoto dopo il filtraggio
+      if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ]; then
+          # Prova a prendere l'ultima riga dell'output (il tag effettivo)
+          LATEST_TAG=$(aws ecr describe-images \
+                      --repository-name "${REPO_NAME}" \
+                      --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+                      --output text \
+                      --region "${AWS_DEFAULT_REGION}" 2>/dev/null | tail -1 | tr -d '\n')
+
+          # Verifica nuovamente se il tag è valido
+          if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "None" ]; then
+              echo "Errore: Impossibile trovare un tag valido per il repository ${REPO_NAME} in ECR nella regione ${AWS_DEFAULT_REGION}."
+              echo "Verifica che il repository esista e contenga immagini taggate."
+              return 1 # Usa return invece di exit
+          fi
       fi
+
+      # Log del tag trovato per debug
+      echo "Tag trovato: $LATEST_TAG"
       local IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
       echo "Utilizzo l'immagine trovata: $IMAGE_NAME_WITH_TAG"
 
