@@ -204,18 +204,44 @@ deploy_module() {
   fi
   # --- FINE COMANDO ---
 
-  # Verifica se il container è stato avviato correttamente
   echo "Verifica avvio container ${CONTAINER_NAME}..."
   sleep 5 # Breve attesa per dare tempo al container di apparire
   if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
       echo "Container ${CONTAINER_NAME} avviato con successo."
-      echo "Attendi 10 secondi per l'inizializzazione..."
-      sleep 10
+      echo "Attesa inizializzazione del modulo..."
+
+      # Imposta un timeout di 60 secondi per l'inizializzazione
+      local TIMEOUT=60
+      local START_TIME=$(date +%s)
+      local INITIALIZED=false
+
+      # Controlla i log fino a quando non trova il messaggio di inizializzazione o scade il timeout
+      while [ $(($(date +%s) - START_TIME)) -lt $TIMEOUT ]; do
+          if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Completed initialization in"; then
+              INITIALIZED=true
+              echo "✅ Modulo ${module_to_deploy} inizializzato correttamente!"
+              break
+          fi
+          echo -n "." # Mostra un indicatore di progresso
+          sleep 2
+      done
+
+      echo "" # Nuova riga dopo i punti di progresso
+
+      # Mostra i log indipendentemente dall'esito dell'inizializzazione
       echo "=== Prime righe di log del servizio ${module_to_deploy} ==="
       docker logs --tail 20 ${CONTAINER_NAME}
       echo "=========================================="
-      echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) completato con successo $(date) ==="
-      return 0
+
+      # Verifica se l'inizializzazione è avvenuta con successo
+      if [ "$INITIALIZED" = true ]; then
+          echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) completato con successo $(date) ==="
+          return 0
+      else
+          echo "Errore: Il modulo ${module_to_deploy} non si è inizializzato correttamente entro ${TIMEOUT} secondi."
+          echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) fallito $(date) ==="
+          return 1
+      fi
   else
       echo "Errore: Container ${CONTAINER_NAME} non trovato in esecuzione dopo 'up -d'."
       echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) fallito $(date) ==="
