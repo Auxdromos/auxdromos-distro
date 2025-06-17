@@ -217,8 +217,7 @@ deploy_module() {
 
       # Controlla i log fino a quando non trova il messaggio di inizializzazione o scade il timeout
       while [ $(($(date +%s) - START_TIME)) -lt $TIMEOUT ]; do
-          if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Completed initialization in" || docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Started.*Application.*seconds"; then
-              INITIALIZED=true
+          if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Completed initialization in" || docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Started.*in.*seconds"; then              INITIALIZED=true
               echo "✅ Modulo ${module_to_deploy} inizializzato correttamente!"
               break
           fi
