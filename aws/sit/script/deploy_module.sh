@@ -126,7 +126,7 @@ deploy_module() {
                     --repository-name "${REPO_NAME}" \
                     --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
                     --output text \
-                    --region "${AWS_DEFAULT_REGION}" 2>/dev/null | grep -v "None" | tr -d '\n')
+                    --region "${AWS_DEFAULT_REGION}" 2>/dev/null | grep -v "None" | head -1)
 
       # Verifica se il tag è vuoto dopo il filtraggio
       if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ]; then
@@ -135,7 +135,7 @@ deploy_module() {
                       --repository-name "${REPO_NAME}" \
                       --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
                       --output text \
-                      --region "${AWS_DEFAULT_REGION}" 2>/dev/null | tail -1 | tr -d '\n')
+                      --region "${AWS_DEFAULT_REGION}" 2>/dev/null | tail -1)
 
           # Verifica nuovamente se il tag è valido
           if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "None" ]; then
@@ -217,7 +217,7 @@ deploy_module() {
 
       # Controlla i log fino a quando non trova il messaggio di inizializzazione o scade il timeout
       while [ $(($(date +%s) - START_TIME)) -lt $TIMEOUT ]; do
-          if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Completed initialization in"; then
+          if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Completed initialization in" || docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Started.*Application.*seconds"; then
               INITIALIZED=true
               echo "✅ Modulo ${module_to_deploy} inizializzato correttamente!"
               break
