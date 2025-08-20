@@ -87,7 +87,7 @@ services:
       KC_DB_SCHEMA: ${KC_DB_SCHEMA:-keycloak}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD} # Letta da env (SecureString da SSM)
-      KC_HOSTNAME: ${KC_HOSTNAME}
+      KC_HOSTNAME: ${KC_HOSTNAME:-sit.idp.auxdromos.it}
       KC_HTTP_ENABLED: ${KC_HTTP_ENABLED:-true}
       KC_PROXY: ${KC_PROXY:-edge}
       KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH:-/}
