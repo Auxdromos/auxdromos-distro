@@ -91,6 +91,8 @@ services:
       KC_HTTP_ENABLED: ${KC_HTTP_ENABLED:-true}
       KC_PROXY: ${KC_PROXY:-edge}
       KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH:-/}
+      KC_HOSTNAME_ADMIN: ${KC_HOSTNAME_ADMIN:-sit.idp.auxdromos.it}
+      KC_HOSTNAME_STRICT_HTTPS: ${KC_HOSTNAME_STRICT_HTTPS:-true}
       KC_HOSTNAME_STRICT: ${KC_HOSTNAME_STRICT:-false}
       KC_HEALTH_ENABLED: ${KC_HEALTH_ENABLED:-true}
       KC_HTTP_MAX_CONNECTIONS: ${KC_HTTP_MAX_CONNECTIONS:-50000}
@@ -205,6 +207,33 @@ services:
       PROFILE: "${PROFILE:-sit}"
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
       SPRING_APPLICATION_NAME: "print-service" # Fixed
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0" # Fixed
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  admin-dashboard:
+    # Uses environment variables for tag, account, and region
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-admin-dashboard:${PRINT_SERVICE_IMAGE_TAG:-latest}
+    container_name: auxdromos-admin-dashboard
+    ports:
+      # Uses environment variables exported by the script
+      - "${EXTERNAL_PORT:-8086}:${INTERNAL_PORT:-8086}" # Added defaults
+    environment:
+      # These are read from external environment (exported by the script)
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888" # Fixed
+      PROFILE: "${PROFILE:-sit}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
+      SPRING_APPLICATION_NAME: "admin-dashboard" # Fixed
       JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0" # Fixed
     deploy:
       resources:
