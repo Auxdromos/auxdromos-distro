@@ -5,27 +5,22 @@ version: '3.8'
 
 services:
   config:
-    image: hyness/spring-cloud-config-server
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-config:${CONFIG_IMAGE_TAG:-latest}
     container_name: auxdromos-config
     ports:
-      # Uses environment variables exported by the script, with defaults for safety
       - "${EXTERNAL_PORT:-8888}:${INTERNAL_PORT:-8888}"
     environment:
-      # Git configuration
       - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=${SPRING_CLOUD_CONFIG_SERVER_GIT_URI}
       - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=${SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME}
       - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=${SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD}
       - SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL=${SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL}
       - SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS=${SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS}
-      # Fixed values
       - SPRING_CLOUD_BUS_ENABLED=false
       - MANAGEMENT_ENDPOINT_HEALTH_ENABLED=true
       - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health
-      # Java options - increased memory limits
       - JAVA_TOOL_OPTIONS=-XX:ReservedCodeCacheSize=64M -Xss512K -XX:MaxMetaspaceSize=128M -Xmx256m -XX:MaxDirectMemorySize=32M -XX:MaxRAMPercentage=75.0
       - BPL_JVM_THREAD_COUNT=50
       - BPL_JVM_HEAD_ROOM=0
-      # Spring profile
       - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-sit}
     networks:
       - auxdromos-network
