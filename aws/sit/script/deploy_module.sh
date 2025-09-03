@@ -114,7 +114,7 @@ deploy_module() {
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
   # Escludi 'config' e 'keycloak' se non sono in ECR
-  if [[ "$module_to_deploy" == "config" || "$module_to_deploy" == "keycloak" ]]; then
+  if [[ "$module_to_deploy" == "keycloak" ]]; then
       echo "Modulo $module_to_deploy non richiede immagine da ECR. Salto ricerca tag."
       local LATEST_TAG="N/A" # O un valore appropriato
   else
