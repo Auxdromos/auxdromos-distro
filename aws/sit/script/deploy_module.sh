@@ -114,13 +114,7 @@ deploy_module() {
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
   if [[ "$module_to_deploy" != "keycloak" && "$module_to_deploy" != "config" ]]; then
-    AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}
-    REPO_NAME="auxdromos-${module_to_deploy}"
-    FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-    echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
-  fi
-  # --- TROVA L'ULTIMO TAG DA ECR ---
-  if [[ "$module_to_deploy" != "keycloak" && "$module_to_deploy" != "config" ]]; then
+    set -euo pipefail
     AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
     ENV_NAME="${ENV_NAME:-sit}"
     AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
@@ -135,6 +129,8 @@ deploy_module() {
       --filter tagStatus=TAGGED \
       --query 'reverse(sort_by(imageDetails,&imagePushedAt))[0].imageTags[0]' \
       --output text)
+    # sanitize CR/LF e spazi
+    LATEST_TAG="$(echo -n "${LATEST_TAG}" | tr -d '\r\n' | xargs)"
 
     if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
       echo "Tag ECR mancante. Fallback SSM..."
@@ -142,6 +138,7 @@ deploy_module() {
         --name "/auxdromos/${ENV_NAME}/${module_to_deploy}/IMAGE_TAG" \
         --region "${AWS_DEFAULT_REGION}" \
         --query 'Parameter.Value' --output text 2>/dev/null || true)
+      LATEST_TAG="$(echo -n "${LATEST_TAG}" | tr -d '\r\n' | xargs)"
     fi
 
     if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
@@ -150,6 +147,7 @@ deploy_module() {
 
     echo "Tag trovato: ${LATEST_TAG}"
     IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
+    IMAGE_NAME_WITH_TAG="$(echo -n "${IMAGE_NAME_WITH_TAG}" | tr -d '\r' )"
 
     upper_modulo="${module_to_deploy^^}"; upper_modulo="${upper_modulo//-/_}"
     DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
@@ -177,11 +175,14 @@ deploy_module() {
   echo "Utilizzo il nome progetto Docker Compose: ${PROJECT_NAME}"
 
   # Stop e rimuovi il container se esiste
-  local CONTAINER_NAME="auxdromos-${module_to_deploy}"
+  CONTAINER_NAME="auxdromos-${module_to_deploy}"  # rimuovi 'local' se non in funzione
   echo "Stop e rimozione container esistente ${CONTAINER_NAME}..."
-  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" stop $module_to_deploy >/dev/null 2>&1 || echo "Info: Container $module_to_deploy non in esecuzione o già fermato."
-  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" rm -f $module_to_deploy >/dev/null 2>&1 || echo "Info: Container $module_to_deploy non trovato per la rimozione."
+  cd / || exit 1
+  cd "/app/distro/artifacts/aws/${ENV_NAME:-sit}/docker" || exit 1
+  test -f "${compose_file_path}" || { echo "Compose non trovato: ${compose_file_path}"; exit 1; }
 
+  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" stop "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non in esecuzione o già fermato."
+  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" rm -f "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non trovato per la rimozione."
   # Rimuovi l'immagine vecchia localmente (solo se abbiamo trovato un tag ECR)
   if [[ "$LATEST_TAG" != "N/A" ]]; then
       echo "Rimozione immagine locale precedente (se esiste) per forzare il pull..."
