@@ -114,40 +114,43 @@ deploy_module() {
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
   if [[ "$module_to_deploy" != "keycloak" && "$module_to_deploy" != "config" ]]; then
-    set -euo pipefail
     AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
     ENV_NAME="${ENV_NAME:-sit}"
     AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
-    FULL_REPO_BASE="${FULL_REPO_BASE:-${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com}"
+    FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
     REPO_NAME="auxdromos-${module_to_deploy}"
 
-    echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
+    echo "Recupero tag (semver) per ${REPO_NAME}..."
 
-    LATEST_TAG=$(aws ecr describe-images \
+    # Prendi TUTTI i tag (solo TAGGED), sanifica, filtra semver, scegli il più alto
+    TAGS_RAW=$(aws ecr describe-images \
       --repository-name "${REPO_NAME}" \
       --region "${AWS_DEFAULT_REGION}" \
       --filter tagStatus=TAGGED \
-      --query 'reverse(sort_by(imageDetails,&imagePushedAt))[0].imageTags[0]' \
-      --output text)
-    # sanitize CR/LF e spazi
-    LATEST_TAG="$(echo -n "${LATEST_TAG}" | tr -d '\r\n' | xargs)"
+      --query 'imageDetails[].imageTags[]' \
+      --output text || true)
+
+    LATEST_TAG=$(printf '%s\n' "${TAGS_RAW}" \
+      | tr -d '\r' | tr '\t' '\n' \
+      | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
+      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+      | sort -V | tail -1)
 
     if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
-      echo "Tag ECR mancante. Fallback SSM..."
+      echo "Tag ECR assente. Fallback SSM..."
       LATEST_TAG=$(aws ssm get-parameter \
         --name "/auxdromos/${ENV_NAME}/${module_to_deploy}/IMAGE_TAG" \
         --region "${AWS_DEFAULT_REGION}" \
         --query 'Parameter.Value' --output text 2>/dev/null || true)
-      LATEST_TAG="$(echo -n "${LATEST_TAG}" | tr -d '\r\n' | xargs)"
+      LATEST_TAG="$(printf '%s' "${LATEST_TAG}" | tr -d '\r\n' | xargs)"
     fi
 
     if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
-      echo "Errore: nessun tag valido per ${REPO_NAME} in ${AWS_DEFAULT_REGION}."; exit 1
+      echo "Errore: nessun tag semver valido per ${REPO_NAME}."; exit 1
     fi
 
-    echo "Tag trovato: ${LATEST_TAG}"
+    echo "Tag scelto (max semver): ${LATEST_TAG}"
     IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
-    IMAGE_NAME_WITH_TAG="$(echo -n "${IMAGE_NAME_WITH_TAG}" | tr -d '\r' )"
 
     upper_modulo="${module_to_deploy^^}"; upper_modulo="${upper_modulo//-/_}"
     DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
@@ -155,10 +158,10 @@ deploy_module() {
 
     export "${DOCKER_TAG_VAR}=${LATEST_TAG}"
     export "${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}"
-    echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
-    echo "Esportata variabile d'ambiente: ${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}"
+    echo "Esportata variabile: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
+    echo "Esportata variabile: ${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}"
 
-    echo "Rinnovamento autenticazione AWS ECR..."
+    echo "Login ECR..."
     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
       | docker login --username AWS --password-stdin "${FULL_REPO_BASE}"
   else
