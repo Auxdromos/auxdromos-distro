@@ -118,7 +118,7 @@ deploy_module() {
     REPO_NAME="auxdromos-${module_to_deploy}"
     FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
     echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
-
+  fi
   # --- TROVA L'ULTIMO TAG DA ECR ---
   if [[ "$module_to_deploy" != "keycloak" && "$module_to_deploy" != "config" ]]; then
     AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
