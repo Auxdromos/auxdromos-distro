@@ -113,57 +113,37 @@ deploy_module() {
   # Verifica altre variabili globali/script necessarie qui, se serve
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
-  # Escludi 'config' e 'keycloak' se non sono in ECR
-  if [[ "$module_to_deploy" == "keycloak" ]]; then
-      echo "Modulo $module_to_deploy non richiede immagine da ECR. Salto ricerca tag."
-      local LATEST_TAG="N/A" # O un valore appropriato
+  if [[ "$module_to_deploy" != "keycloak" && "$module_to_deploy" != "config" ]]; then
+    AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}
+    REPO_NAME="auxdromos-${module_to_deploy}"
+    FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+    echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
+
+    # Prende solo immagini con tag non null, ordina per push time, prende l’ultima
+    LATEST_TAG=$(aws ecr describe-images \
+      --repository-name "${REPO_NAME}" \
+      --region "${AWS_DEFAULT_REGION}" \
+      --query "reverse(sort_by(imageDetails[?imageTags!=null], &imagePushedAt))[0].imageTags[0]" \
+      --output text)
+
+    if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "None" ]]; then
+      echo "Errore: nessun tag ECR valido per ${REPO_NAME} in ${AWS_DEFAULT_REGION}."
+      return 1
+    fi
+
+    echo "Tag trovato: $LATEST_TAG"
+    IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
+
+    upper_modulo="${module_to_deploy^^}"; upper_modulo="${upper_modulo//-/_}"
+    DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
+    export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
+    echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
+
+    echo "Rinnovamento autenticazione AWS ECR..."
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | \
+      docker login --username AWS --password-stdin "${FULL_REPO_BASE}"
   else
-      local REPO_NAME="auxdromos-${module_to_deploy}"
-      local FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-      echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
-      # Versione migliorata che gestisce correttamente i tag "None" e i caratteri di nuova riga
-      LATEST_TAG=$(aws ecr describe-images \
-                    --repository-name "${REPO_NAME}" \
-                    --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
-                    --output text \
-                    --region "${AWS_DEFAULT_REGION}" 2>/dev/null | grep -v "None" | head -1)
-
-      # Verifica se il tag è vuoto dopo il filtraggio
-      if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ]; then
-          # Prova a prendere l'ultima riga dell'output (il tag effettivo)
-          LATEST_TAG=$(aws ecr describe-images \
-                      --repository-name "${REPO_NAME}" \
-                      --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
-                      --output text \
-                      --region "${AWS_DEFAULT_REGION}" 2>/dev/null | tail -1)
-
-          # Verifica nuovamente se il tag è valido
-          if [ $? -ne 0 ] || [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "None" ]; then
-              echo "Errore: Impossibile trovare un tag valido per il repository ${REPO_NAME} in ECR nella regione ${AWS_DEFAULT_REGION}."
-              echo "Verifica che il repository esista e contenga immagini taggate."
-              return 1 # Usa return invece di exit
-          fi
-      fi
-
-      # Log del tag trovato per debug
-      echo "Tag trovato: $LATEST_TAG"
-      local IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
-      echo "Utilizzo l'immagine trovata: $IMAGE_NAME_WITH_TAG"
-
-      # --- ESPORTA LA VARIABILE D'AMBIENTE PER IL TAG ---
-      typeset -u upper_modulo="${module_to_deploy}" # Converte in maiuscolo
-      upper_modulo="${upper_modulo//-/_}" # Replace dashes with underscores
-      local DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
-      export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
-      echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}" >&2
-
-      # --- Rinnova l'autenticazione AWS ECR ---
-      echo "Rinnovamento autenticazione AWS ECR..."
-      if ! aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${FULL_REPO_BASE}; then
-          echo "Errore durante l'autenticazione a AWS ECR."
-          return 1 # Usa return
-      fi
-      echo "Login ECR Succeeded"
+    LATEST_TAG="N/A"
   fi
   # --- FINE LOGICA ECR ---
 
