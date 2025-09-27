@@ -120,14 +120,27 @@ deploy_module() {
     echo "Recupero dell'ultimo tag per il repository ECR: ${REPO_NAME}..."
 
     # Prende solo immagini con tag non null, ordina per push time, prende l’ultima
+    # Seleziona SOLO immagini taggate e prendi l'ultima per data push
     LATEST_TAG=$(aws ecr describe-images \
       --repository-name "${REPO_NAME}" \
       --region "${AWS_DEFAULT_REGION}" \
-      --query "reverse(sort_by(imageDetails[?imageTags!=null], &imagePushedAt))[0].imageTags[0]" \
+      --filter tagStatus=TAGGED \
+      --query 'reverse(sort_by(imageDetails,&imagePushedAt))[0].imageTags[0]' \
       --output text)
 
-    if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "None" ]]; then
-      echo "Errore: nessun tag ECR valido per ${REPO_NAME} in ${AWS_DEFAULT_REGION}."
+    # Fallback: se mancante/None prova da SSM per ambiente SIT
+    if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
+      echo "Tag ECR mancante. Fallback SSM..."
+      LATEST_TAG=$(aws ssm get-parameter \
+        --name "/auxdromos/sit/${module_to_deploy}/IMAGE_TAG" \
+        --region "${AWS_DEFAULT_REGION}" \
+        --query 'Parameter.Value' --output text 2>/dev/null || true)
+    fi
+
+    # Errore chiaro se ancora assente
+    if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
+      echo "Errore: nessun tag valido per ${REPO_NAME} in ${AWS_DEFAULT_REGION}."
+      echo "Verifica che il repo contenga immagini TAGGED o imposta il parametro SSM /auxdromos/sit/${module_to_deploy}/IMAGE_TAG."
       return 1
     fi
 
@@ -138,6 +151,10 @@ deploy_module() {
     DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
     export ${DOCKER_TAG_VAR}="${LATEST_TAG}"
     echo "Esportata variabile d'ambiente: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
+
+    local DOCKER_IMAGE_VAR="${upper_modulo}_IMAGE"
+    export ${DOCKER_IMAGE_VAR}="${IMAGE_NAME_WITH_TAG}"
+    echo "Esportata variabile d'ambiente: ${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}" >&2
 
     echo "Rinnovamento autenticazione AWS ECR..."
     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | \
