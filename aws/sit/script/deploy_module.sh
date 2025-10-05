@@ -218,26 +218,68 @@ deploy_module() {
   echo "Verifica avvio container ${CONTAINER_NAME}..."
   sleep 5 # Breve attesa per dare tempo al container di apparire
   if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-      echo "Container ${CONTAINER_NAME} avviato con successo."
-      echo "Attesa inizializzazione del modulo..."
-
-      # Imposta un timeout di 60 secondi per l'inizializzazione
+      # Imposta timeout differenziato per modulo
       local TIMEOUT=60
+      if [[ "$module_to_deploy" == "rdbms" ]]; then
+          TIMEOUT=300  # 5 minuti per rdbms/liquibase
+      fi
+
       local START_TIME=$(date +%s)
       local INITIALIZED=false
 
+      # Pattern di log specifici per modulo
+      local success_patterns=()
+      if [[ "$module_to_deploy" == "rdbms" ]]; then
+          success_patterns=(
+              "Liquibase command 'update' was executed successfully"
+              "Successfully released change log lock"
+              "Liquibase: Update has been successful"
+              "Migration completed successfully"
+              "Database update completed"
+              "Completed initialization in"
+              "Started.*in.*seconds"
+          )
+      else
+          success_patterns=(
+              "Completed initialization in"
+              "Started.*in.*seconds"
+          )
+      fi
+
+      echo "Controllo inizializzazione ${module_to_deploy} (timeout: ${TIMEOUT}s)..."
+
       # Controlla i log fino a quando non trova il messaggio di inizializzazione o scade il timeout
       while [ $(($(date +%s) - START_TIME)) -lt $TIMEOUT ]; do
-          if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Completed initialization in" || docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Started.*in.*seconds"; then              INITIALIZED=true
-              echo "✅ Modulo ${module_to_deploy} inizializzato correttamente!"
-              break
+          local container_logs=$(docker logs ${CONTAINER_NAME} 2>&1)
+
+          # Controlla tutti i pattern di successo
+          for pattern in "${success_patterns[@]}"; do
+              if echo "$container_logs" | grep -q "$pattern"; then
+                  INITIALIZED=true
+                  echo "✅ Modulo ${module_to_deploy} inizializzato correttamente! (Pattern: $pattern)"
+                  break 2  # Esce da entrambi i loop
+              fi
+          done
+
+          # Per rdbms, controlla anche che non ci siano errori fatali
+          if [[ "$module_to_deploy" == "rdbms" ]]; then
+              if echo "$container_logs" | grep -q -E "(SEVERE|FATAL|Connection refused|Database.*not available)"; then
+                  echo "❌ Errore fatale rilevato nei log di ${module_to_deploy}"
+                  break
+              fi
+
+              # Mostra progresso più dettagliato per rdbms
+              if echo "$container_logs" | grep -q -E "(Running Changeset|Liquibase.*update|Processing.*changeset)"; then
+                  echo -n "🔄" # Indica che Liquibase sta processando
+              else
+                  echo -n "."
+              fi
+          else
+              echo -n "." # Mostra un indicatore di progresso standard
           fi
-          echo -n "." # Mostra un indicatore di progresso
-          sleep 2
+
+          sleep 3  # Intervallo leggermente più lungo per ridurre il carico
       done
-
-      echo "" # Nuova riga dopo i punti di progresso
-
       # Mostra i log indipendentemente dall'esito dell'inizializzazione
       echo "=== Prime righe di log del servizio ${module_to_deploy} ==="
       docker logs --tail 20 ${CONTAINER_NAME}
