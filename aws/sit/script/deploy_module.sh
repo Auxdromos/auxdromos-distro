@@ -184,6 +184,12 @@ deploy_module() {
   cd "/app/distro/artifacts/aws/${ENV_NAME:-sit}/docker" || exit 1
   test -f "${compose_file_path}" || { echo "Compose non trovato: ${compose_file_path}"; exit 1; }
 
+  # Pulizia risorse Docker prima del deploy
+  echo "Pulizia risorse Docker non utilizzate..."
+  docker container prune -f 2>/dev/null || echo "Info: Errore durante il prune dei container."
+  docker network prune -f 2>/dev/null || echo "Info: Errore durante il prune delle reti."
+  docker image prune -f 2>/dev/null || echo "Info: Errore durante il prune delle immagini dangling."
+
   docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" stop "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non in esecuzione o già fermato."
   docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" rm -f "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non trovato per la rimozione."
   # Rimuovi l'immagine vecchia localmente (solo se abbiamo trovato un tag ECR)
