@@ -492,7 +492,7 @@ jobs:
     name: Deploy to SIT Environment (Main Branch Only)
     runs-on: ubuntu-latest
     needs: [extract_module_info, upload_to_s3, build_docker] # Dipende ancora da upload_to_s3 per il deploy di 'distro'
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    if: github.event_name == 'push' && github.ref_name == 'main' && needs.extract_module_info.outputs.module_name != 'distro'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
