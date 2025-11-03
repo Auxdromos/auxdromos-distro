@@ -693,18 +693,22 @@ jobs:
           
           # Job che si eseguono solo su main - recupera da needs solo se applicabile
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            # Recupera i risultati dai job condizionali tramite API GitHub se necessario
-            UPLOAD_RESULT="$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" | \
-              jq -r '.jobs[] | select(.name | contains("Upload Artifacts to S3")) | .conclusion // "skipped"')"
-            
-            DEPLOY_RESULT="$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" | \
-              jq -r '.jobs[] | select(.name | contains("Deploy to SIT Environment")) | .conclusion // "skipped"')"
-            
-            DOCKER_RESULT="$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" | \
-              jq -r '.jobs[] | select(.name | contains("Build and Push Docker Image")) | .conclusion // "skipped"')"
+            # Recupera i risultati dai job condizionali tramite un'unica chiamata API GitHub (null-safe)
+            API_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs"
+            API_JOBS=$(curl -sS \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "$API_URL")
+
+            # Se la risposta non contiene .jobs, stampa il messaggio dell'API per debug ma non far fallire lo step
+            if ! echo "$API_JOBS" | jq -e '.jobs' >/dev/null 2>&1; then
+              echo "[DEBUG_LOG] Risposta /jobs inattesa:" >&2
+              echo "$API_JOBS" | jq -r '.message? // . | tostring' >&2
+            fi
+
+            UPLOAD_RESULT=$(echo "$API_JOBS" | jq -r '((.jobs // [])[] | select(.name | contains("Upload Artifacts to S3")) | .conclusion) // "skipped"')
+            DEPLOY_RESULT=$(echo  "$API_JOBS" | jq -r '((.jobs // [])[] | select(.name | contains("Deploy to SIT Environment")) | .conclusion) // "skipped"')
+            DOCKER_RESULT=$(echo  "$API_JOBS" | jq -r '((.jobs // [])[] | select(.name | contains("Build and Push Docker Image")) | .conclusion) // "skipped"')
           else
             UPLOAD_RESULT="not_applicable"
             DEPLOY_RESULT="not_applicable" 
@@ -846,39 +850,40 @@ jobs:
           DAYS_OLD=${{ inputs.artifact-retention-days }}
           echo "Soglia di età impostata a $DAYS_OLD giorni"
 
-          # Ottieni il token GitHub per l'API
-          TOKEN="${{ secrets.GITHUB_PACKAGES_TOKEN }}"
+          # Usa il GITHUB_TOKEN con gli scope del job Actions
+          TOKEN="${{ secrets.GITHUB_TOKEN }}"
 
-          # Ottieni l'ID del repository
-          REPO_ID=$(curl -s -H "Authorization: token $TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}" | \
-            jq -r '.id')
+          # Ottieni l'ID del repository (opzionale, utile per debug)
+          REPO_INFO=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}")
+          REPO_ID=$(echo "$REPO_INFO" | jq -r '.id // empty')
 
-          echo "Repository ID: $REPO_ID"
+          echo "Repository ID: ${REPO_ID:-sconosciuto}"
           echo "Repository: ${{ github.repository }}"
 
           # Calcola la data limite (oggi - DAYS_OLD)
-          # Usa una soluzione più portabile per calcolare la data limite
           CURRENT_DATE=$(date +%s)
           SECONDS_IN_DAY=86400
           CUTOFF_DATE=$((CURRENT_DATE - (DAYS_OLD * SECONDS_IN_DAY)))
-          # Usa date con formato compatibile con Ubuntu
           CUTOFF_DATE_HUMAN=$(date -u --date="@$CUTOFF_DATE" "+%Y-%m-%d")
           echo "Data limite: $CUTOFF_DATE_HUMAN (timestamp: $CUTOFF_DATE)"
 
           echo "Recupero lista degli artifact dal repository..."
-          # Ottieni la lista degli artifact
-          ARTIFACTS=$(curl -s -H "Authorization: token $TOKEN" \
+          ARTIFACTS=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=100")
 
-          TOTAL_ARTIFACTS=$(echo "$ARTIFACTS" | jq -r '.total_count')
+          # Se manca .artifacts, stampa il messaggio d'errore e continua senza crash
+          if ! echo "$ARTIFACTS" | jq -e '.artifacts' >/dev/null 2>&1; then
+            echo "[DEBUG_LOG] Risposta inattesa dall'API artifacts:" >&2
+            echo "$ARTIFACTS" | jq -r '.message? // . | tostring' >&2
+          fi
+
+          TOTAL_ARTIFACTS=$(echo "$ARTIFACTS" | jq -r '.total_count // 0')
           echo "Totale artifact trovati: $TOTAL_ARTIFACTS"
 
           echo "Identificazione degli artifact più vecchi della soglia..."
-          # Estrai gli ID degli artifact più vecchi della soglia
-          # Usa strptime per convertire la data ISO 8601 in timestamp Unix
-          OLD_ARTIFACT_IDS=$(echo "$ARTIFACTS" | jq -r ".artifacts[] | 
-            select((.created_at | strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime) < $CUTOFF_DATE) | 
+          OLD_ARTIFACT_IDS=$(echo "$ARTIFACTS" | jq -r "(.artifacts // [])[] |
+            select((.created_at | strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime) < $CUTOFF_DATE) |
             .id")
 
           # Conta quanti artifact verranno eliminati
@@ -891,13 +896,13 @@ jobs:
           fi
 
           echo "=== Inizio eliminazione degli artifact ==="
-          # Elimina gli artifact più vecchi
           SUCCESS_COUNT=0
           FAIL_COUNT=0
 
           for ARTIFACT_ID in $OLD_ARTIFACT_IDS; do
             echo "Eliminazione artifact ID: $ARTIFACT_ID"
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "Authorization: token $TOKEN" \
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID")
 
             if [ "$HTTP_CODE" -eq 204 ] || [ "$HTTP_CODE" -eq 200 ]; then

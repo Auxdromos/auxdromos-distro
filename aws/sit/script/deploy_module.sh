@@ -30,7 +30,7 @@ fetch_and_export_params() {
     --recursive \
     --region "${AWS_REGION_PARAM}" \
     --output json | \
-    jq -r '.Parameters[]? | .Name + "=" + .Value' | \
+    jq -r '(.Parameters // [])[] | .Name + "=" + .Value' | \
     while IFS='=' read -r key value; do
       local param_name=$(basename "$key")
       echo "Esportazione parametro: ${param_name}"
@@ -75,7 +75,7 @@ fetch_and_export_params() {
 deploy_module() {
   local module_to_deploy="$1"
   # Determina il percorso del file docker-compose.yml
-  local compose_file_path="$BASE_DIR/sit/docker/docker-compose.yml" # Adjusted to avoid duplicate aws/
+  local compose_file_path="$BASE_DIR/aws/sit/docker/docker-compose.yml"
 
   echo ""
   echo "-----------------------------------------"
