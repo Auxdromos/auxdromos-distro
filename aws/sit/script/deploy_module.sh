@@ -16,25 +16,34 @@ SCRIPT_PARAM_PATH="/auxdromos/sit/script"
 
 # --- NUOVA FUNZIONE: Recupera ed esporta parametri da AWS SSM ---
 # Richiede AWS CLI v2 e jq installati
+
 fetch_and_export_params() {
   local PARAM_PATH="$1"
-  local AWS_REGION_PARAM="$2" # Passa la regione come argomento
+  local AWS_REGION_PARAM="$2"
   local TEMP_ENV_FILE=$(mktemp)
   echo "Recupero parametri da AWS SSM Path: ${PARAM_PATH} nella regione ${AWS_REGION_PARAM}..."
 
-  # Improved parameter fetching and export
+  # Improved parameter fetching and export with null safety
   aws ssm get-parameters-by-path \
     --path "$PARAM_PATH" \
     --with-decryption \
     --recursive \
     --region "${AWS_REGION_PARAM}" \
     --output json | \
-    jq -r '.Parameters[] | .Name + "=" + .Value' | \
+    jq -r '.Parameters[]? | .Name + "=" + .Value' | \
     while IFS='=' read -r key value; do
       local param_name=$(basename "$key")
       echo "Esportazione parametro: ${param_name}"
       echo "export ${param_name}='${value}'" >> "$TEMP_ENV_FILE"
     done
+
+  # Verifica se la pipe ha avuto successo
+  local pipe_status=${PIPESTATUS[0]}
+  if [ $pipe_status -ne 0 ]; then
+    echo "Errore: Il comando aws ssm get-parameters-by-path per ${PARAM_PATH} ha fallito con codice ${pipe_status}."
+    rm -f "$TEMP_ENV_FILE"
+    return 1
+  fi
 
   # Source the temporary file to set variables in current environment
   if [ -f "$TEMP_ENV_FILE" ] && [ -s "$TEMP_ENV_FILE" ]; then
@@ -47,18 +56,8 @@ fetch_and_export_params() {
     return 1
   fi
 
-  # Verifica se la pipe ha avuto successo (jq o aws potrebbero fallire)
-  local pipe_status=${PIPESTATUS[0]} # Controlla lo stato di uscita del comando aws ssm
-  if [ $pipe_status -ne 0 ]; then
-       echo "Errore: Il comando aws ssm get-parameters-by-path per ${PARAM_PATH} ha fallito con codice ${pipe_status}."
-       return 1 # Ritorna errore
-  fi
-
-  # Verifica aggiuntiva: controlla se almeno una variabile attesa è stata esportata (opzionale)
-  # Esempio: if [[ -z "${EXPECTED_VAR_FROM_THIS_PATH}" ]]; then echo "Warning: Expected var not found"; fi
-
   echo "Recupero parametri da ${PARAM_PATH} completato."
-  return 0 # Successo
+  return 0
 }
 # --- FINE NUOVA FUNZIONE ---
 
