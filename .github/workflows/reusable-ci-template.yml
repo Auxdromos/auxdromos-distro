@@ -126,7 +126,7 @@ jobs:
   build:
     name: Build Project
     runs-on: ubuntu-latest
-    needs: [extract_module_info, check_version]
+    needs: [extract_module_info]
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
@@ -653,7 +653,8 @@ jobs:
   slack_notification:
     name: Send Slack Notification
     runs-on: ubuntu-latest
-    needs: [extract_module_info, build, test, upload_to_s3, deploy_sit]
+    # Dipende solo dai job sempre eseguiti per evitare problemi con job skippati
+    needs: [extract_module_info, build, test]
     if: always() # Esegui sempre, anche se i job precedenti falliscono
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
@@ -686,29 +687,79 @@ jobs:
         id: slack-message
         if: steps.get-slack-webhook.outputs.SLACK_WEBHOOK_CONFIGURED == 'true'
         run: |
-          # Determina lo stato complessivo del workflow
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+          # Analizza lo stato di ogni job specifico
+          BUILD_RESULT="${{ needs.build.result }}"
+          TEST_RESULT="${{ needs.test.result }}"
+          
+          # Job che si eseguono solo su main - recupera da needs solo se applicabile
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            # Recupera i risultati dai job condizionali tramite API GitHub se necessario
+            UPLOAD_RESULT="$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" | \
+              jq -r '.jobs[] | select(.name | contains("Upload Artifacts to S3")) | .conclusion // "skipped"')"
+            
+            DEPLOY_RESULT="$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" | \
+              jq -r '.jobs[] | select(.name | contains("Deploy to SIT Environment")) | .conclusion // "skipped"')"
+            
+            DOCKER_RESULT="$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" | \
+              jq -r '.jobs[] | select(.name | contains("Build and Push Docker Image")) | .conclusion // "skipped"')"
+          else
+            UPLOAD_RESULT="not_applicable"
+            DEPLOY_RESULT="not_applicable" 
+            DOCKER_RESULT="not_applicable"
+          fi
+          
+          # Determina lo stato complessivo
+          FAILED_JOBS=""
+          CANCELLED_JOBS=""
+          
+          # Controlla job essenziali (sempre eseguiti)
+          if [[ "$BUILD_RESULT" == "failure" ]] || [[ "$TEST_RESULT" == "failure" ]]; then
+            FAILED_JOBS="true"
+          fi
+          
+          # Controlla job condizionali solo se dovevano essere eseguiti
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            if [[ "$UPLOAD_RESULT" == "failure" ]] || [[ "$DEPLOY_RESULT" == "failure" ]] || [[ "$DOCKER_RESULT" == "failure" ]]; then
+              FAILED_JOBS="true"
+            fi
+            if [[ "$UPLOAD_RESULT" == "cancelled" ]] || [[ "$DEPLOY_RESULT" == "cancelled" ]] || [[ "$DOCKER_RESULT" == "cancelled" ]]; then
+              CANCELLED_JOBS="true"
+            fi
+          fi
+          
+          if [[ "$BUILD_RESULT" == "cancelled" ]] || [[ "$TEST_RESULT" == "cancelled" ]]; then
+            CANCELLED_JOBS="true"
+          fi
+          
+          # Imposta stato finale
+          if [[ "$FAILED_JOBS" == "true" ]]; then
             echo "status=:x: Fallito" >> $GITHUB_OUTPUT
             echo "color=danger" >> $GITHUB_OUTPUT
-          elif [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+          elif [[ "$CANCELLED_JOBS" == "true" ]]; then
             echo "status=:warning: Annullato" >> $GITHUB_OUTPUT
             echo "color=warning" >> $GITHUB_OUTPUT
           else
             echo "status=:white_check_mark: Successo" >> $GITHUB_OUTPUT
             echo "color=good" >> $GITHUB_OUTPUT
           fi
-
-          # Crea un riepilogo dei job
-          echo "build_status=Build: ${{ needs.build.result }}" >> $GITHUB_OUTPUT
-          echo "test_status=Test: ${{ needs.test.result }}" >> $GITHUB_OUTPUT
-
-          # Aggiungi info sul deploy solo se è stato eseguito
+          
+          # Prepara messaggi di stato per ogni job
+          echo "build_status=Build: $BUILD_RESULT" >> $GITHUB_OUTPUT
+          echo "test_status=Test: $TEST_RESULT" >> $GITHUB_OUTPUT
+          
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "deploy_status=Deploy SIT: ${{ needs.deploy_sit.result }}" >> $GITHUB_OUTPUT
-            echo "docker_status=Docker Build: ${{ needs.build_docker.result || 'skipped' }}" >> $GITHUB_OUTPUT
+            echo "deploy_status=Deploy SIT: $DEPLOY_RESULT" >> $GITHUB_OUTPUT
+            echo "docker_status=Docker Build: $DOCKER_RESULT" >> $GITHUB_OUTPUT
+            echo "upload_status=Upload S3: $UPLOAD_RESULT" >> $GITHUB_OUTPUT
+            echo "environment_info=Ambiente: Produzione (SIT)" >> $GITHUB_OUTPUT
           else
-            echo "deploy_status=" >> $GITHUB_OUTPUT
-            echo "docker_status=" >> $GITHUB_OUTPUT
+            echo "deploy_status=Deploy SIT: non applicabile (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
+            echo "docker_status=Docker Build: non applicabile (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
+            echo "upload_status=Upload S3: non applicabile (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
+            echo "environment_info=Ambiente: Sviluppo (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
           fi
 
       - name: Send Slack Notification
@@ -741,11 +792,11 @@ jobs:
                         },
                         {
                           "type": "mrkdwn",
-                          "text": "*Commit:*\n${{ github.sha }}"
+                          "text": "*Trigger:*\n${{ github.event_name }}"
                         },
                         {
                           "type": "mrkdwn",
-                          "text": "*Trigger:*\n${{ github.event_name }}"
+                          "text": "*${{ steps.slack-message.outputs.environment_info }}*"
                         }
                       ]
                     },
@@ -753,7 +804,7 @@ jobs:
                       "type": "section",
                       "text": {
                         "type": "mrkdwn",
-                        "text": "*Stato Job:*\n${{ steps.slack-message.outputs.build_status }}\n${{ steps.slack-message.outputs.test_status }}\n${{ steps.slack-message.outputs.deploy_status }}\n${{ steps.slack-message.outputs.docker_status }}"
+                        "text": "*Stato Job:*\n${{ steps.slack-message.outputs.build_status }}\n${{ steps.slack-message.outputs.test_status }}\n${{ steps.slack-message.outputs.upload_status }}\n${{ steps.slack-message.outputs.deploy_status }}\n${{ steps.slack-message.outputs.docker_status }}"
                       }
                     },
                     {

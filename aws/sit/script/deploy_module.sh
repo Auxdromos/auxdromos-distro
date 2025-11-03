@@ -177,6 +177,16 @@ deploy_module() {
   local PROJECT_NAME=$(basename "${compose_dir}")
   echo "Utilizzo il nome progetto Docker Compose: ${PROJECT_NAME}"
 
+  # Controlla spazio disco disponibile
+  echo "Spazio disco disponibile:"
+  df -h / | grep -v Filesystem
+
+  # Avvisa se lo spazio è limitato (meno di 2GB)
+  AVAILABLE_SPACE=$(df / | tail -1 | awk '{print $4}')
+  if [ "$AVAILABLE_SPACE" -lt 2097152 ]; then  # 2GB in KB
+    echo "⚠️ ATTENZIONE: Spazio disco limitato (meno di 2GB disponibili)"
+  fi
+
   # Stop e rimuovi il container se esiste
   CONTAINER_NAME="auxdromos-${module_to_deploy}"  # rimuovi 'local' se non in funzione
   echo "Stop e rimozione container esistente ${CONTAINER_NAME}..."
@@ -189,6 +199,13 @@ deploy_module() {
   docker container prune -f 2>/dev/null || echo "Info: Errore durante il prune dei container."
   docker network prune -f 2>/dev/null || echo "Info: Errore durante il prune delle reti."
   docker image prune -f 2>/dev/null || echo "Info: Errore durante il prune delle immagini dangling."
+
+  # Pulizia aggiuntiva per il modulo rdbms per liberare più spazio
+  if [[ "$module_to_deploy" == "rdbms" ]]; then
+    echo "Pulizia aggiuntiva per modulo rdbms..."
+    docker volume prune -f 2>/dev/null || echo "Info: Errore durante il prune dei volumi."
+    docker system prune -f --volumes 2>/dev/null || echo "Info: Errore durante il system prune."
+  fi
 
   docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" stop "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non in esecuzione o già fermato."
   docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" rm -f "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non trovato per la rimozione."
@@ -221,11 +238,13 @@ deploy_module() {
       # Imposta timeout differenziato per modulo
       local TIMEOUT=60
       if [[ "$module_to_deploy" == "rdbms" ]]; then
-          TIMEOUT=300  # 5 minuti per rdbms/liquibase
+          TIMEOUT=450  # 7.5 minuti per rdbms/liquibase (aumentato)
+          echo "ℹ️ Timeout esteso per modulo rdbms: ${TIMEOUT}s (Liquibase richiede più tempo)"
       fi
 
       local START_TIME=$(date +%s)
       local INITIALIZED=false
+      local LAST_LOG_CHECK=""
 
       # Pattern di log specifici per modulo
       local success_patterns=()
@@ -238,11 +257,15 @@ deploy_module() {
               "Database update completed"
               "Completed initialization in"
               "Started.*in.*seconds"
+              "Application startup completed"
+              "Ready to accept connections"
           )
       else
           success_patterns=(
               "Completed initialization in"
               "Started.*in.*seconds"
+              "Application startup completed"
+              "Ready to accept connections"
           )
       fi
 
@@ -251,6 +274,14 @@ deploy_module() {
       # Controlla i log fino a quando non trova il messaggio di inizializzazione o scade il timeout
       while [ $(($(date +%s) - START_TIME)) -lt $TIMEOUT ]; do
           local container_logs=$(docker logs ${CONTAINER_NAME} 2>&1)
+
+          # Per rdbms, controlla prima se il container è ancora in esecuzione
+          if [[ "$module_to_deploy" == "rdbms" ]]; then
+              if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+                  echo "❌ Container ${CONTAINER_NAME} non più in esecuzione durante l'inizializzazione"
+                  break
+              fi
+          fi
 
           # Controlla tutti i pattern di successo
           for pattern in "${success_patterns[@]}"; do
@@ -263,22 +294,28 @@ deploy_module() {
 
           # Per rdbms, controlla anche che non ci siano errori fatali
           if [[ "$module_to_deploy" == "rdbms" ]]; then
-              if echo "$container_logs" | grep -q -E "(SEVERE|FATAL|Connection refused|Database.*not available)"; then
+              if echo "$container_logs" | grep -q -E "(SEVERE|FATAL|Connection refused|Database.*not available|Lock could not be acquired|OutOfMemoryError)"; then
                   echo "❌ Errore fatale rilevato nei log di ${module_to_deploy}"
+                  echo "Ultimi log per debug:"
+                  echo "$container_logs" | tail -20
                   break
               fi
 
               # Mostra progresso più dettagliato per rdbms
-              if echo "$container_logs" | grep -q -E "(Running Changeset|Liquibase.*update|Processing.*changeset)"; then
-                  echo -n "🔄" # Indica che Liquibase sta processando
+              local current_log_snippet=$(echo "$container_logs" | tail -5 | tr '\n' ' ')
+              if [[ "$current_log_snippet" != "$LAST_LOG_CHECK" ]]; then
+                  if echo "$container_logs" | grep -q -E "(Running Changeset|Liquibase.*update|Processing.*changeset|Migrating schema|Creating table)"; then
+                      echo "🔄 Liquibase in esecuzione... ($(( $(date +%s) - START_TIME ))s)"
+                  fi
+                  LAST_LOG_CHECK="$current_log_snippet"
               else
-                  echo -n "."
+                  echo -n "." # Indica che il processo è ancora attivo
               fi
           else
               echo -n "." # Mostra un indicatore di progresso standard
           fi
 
-          sleep 3  # Intervallo leggermente più lungo per ridurre il carico
+          sleep 5  # Intervallo più lungo per ridurre il carico e dare più tempo al processo
       done
       # Mostra i log indipendentemente dall'esito dell'inizializzazione
       echo "=== Prime righe di log del servizio ${module_to_deploy} ==="
