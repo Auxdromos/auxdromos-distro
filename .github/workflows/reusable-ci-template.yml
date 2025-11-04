@@ -653,8 +653,8 @@ jobs:
   slack_notification:
     name: Send Slack Notification
     runs-on: ubuntu-latest
-    # Dipende solo dai job sempre eseguiti per evitare problemi con job skippati
-    needs: [extract_module_info, build, test]
+    # Dipende da tutti i job per rilevare correttamente i fallimenti
+    needs: [extract_module_info, build, test, upload_to_s3, tag_latest, deploy_sit, build_docker]
     if: always() # Esegui sempre, anche se i job precedenti falliscono
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
@@ -687,33 +687,13 @@ jobs:
         id: slack-message
         if: steps.get-slack-webhook.outputs.SLACK_WEBHOOK_CONFIGURED == 'true'
         run: |
-          # Analizza lo stato di ogni job specifico
+          # Recupera risultati dai job tramite needs
           BUILD_RESULT="${{ needs.build.result }}"
           TEST_RESULT="${{ needs.test.result }}"
-          
-          # Job che si eseguono solo su main - recupera da needs solo se applicabile
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            # Recupera i risultati dai job condizionali tramite un'unica chiamata API GitHub (null-safe)
-            API_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs"
-            API_JOBS=$(curl -sS \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "$API_URL")
-
-            # Se la risposta non contiene .jobs, stampa il messaggio dell'API per debug ma non far fallire lo step
-            if ! echo "$API_JOBS" | jq -e '.jobs' >/dev/null 2>&1; then
-              echo "[DEBUG_LOG] Risposta /jobs inattesa:" >&2
-              echo "$API_JOBS" | jq -r '.message? // . | tostring' >&2
-            fi
-
-            UPLOAD_RESULT=$(echo "$API_JOBS" | jq -r '((.jobs // [])[] | select(.name | contains("Upload Artifacts to S3")) | .conclusion) // "skipped"')
-            DEPLOY_RESULT=$(echo  "$API_JOBS" | jq -r '((.jobs // [])[] | select(.name | contains("Deploy to SIT Environment")) | .conclusion) // "skipped"')
-            DOCKER_RESULT=$(echo  "$API_JOBS" | jq -r '((.jobs // [])[] | select(.name | contains("Build and Push Docker Image")) | .conclusion) // "skipped"')
-          else
-            UPLOAD_RESULT="not_applicable"
-            DEPLOY_RESULT="not_applicable" 
-            DOCKER_RESULT="not_applicable"
-          fi
+          UPLOAD_RESULT="${{ needs.upload_to_s3.result }}"
+          TAG_RESULT="${{ needs.tag_latest.result }}"
+          DEPLOY_RESULT="${{ needs.deploy_sit.result }}"
+          DOCKER_RESULT="${{ needs.build_docker.result }}"
           
           # Determina lo stato complessivo
           FAILED_JOBS=""
@@ -724,16 +704,19 @@ jobs:
             FAILED_JOBS="true"
           fi
           
-          # Controlla job condizionali solo se dovevano essere eseguiti
+          # Controlla job condizionali solo su main
+          # "skipped" è accettabile (condizione if: non soddisfatta)
+          # "failure" deve essere rilevato
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            if [[ "$UPLOAD_RESULT" == "failure" ]] || [[ "$DEPLOY_RESULT" == "failure" ]] || [[ "$DOCKER_RESULT" == "failure" ]]; then
+            if [[ "$UPLOAD_RESULT" == "failure" ]] || [[ "$TAG_RESULT" == "failure" ]] || [[ "$DEPLOY_RESULT" == "failure" ]] || [[ "$DOCKER_RESULT" == "failure" ]]; then
               FAILED_JOBS="true"
             fi
-            if [[ "$UPLOAD_RESULT" == "cancelled" ]] || [[ "$DEPLOY_RESULT" == "cancelled" ]] || [[ "$DOCKER_RESULT" == "cancelled" ]]; then
+            if [[ "$UPLOAD_RESULT" == "cancelled" ]] || [[ "$TAG_RESULT" == "cancelled" ]] || [[ "$DEPLOY_RESULT" == "cancelled" ]] || [[ "$DOCKER_RESULT" == "cancelled" ]]; then
               CANCELLED_JOBS="true"
             fi
           fi
           
+          # Controlla cancellazioni per job essenziali
           if [[ "$BUILD_RESULT" == "cancelled" ]] || [[ "$TEST_RESULT" == "cancelled" ]]; then
             CANCELLED_JOBS="true"
           fi
