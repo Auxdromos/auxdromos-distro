@@ -46,7 +46,7 @@ while (( "$#" )); do
     -t) TENANT_ARGS+=("$2"); shift 2 ;;
     --email-verified) EMAIL_VERIFIED="true"; shift ;;
     -h|--help)
-      echo "Uso: $0 [-r regione] [-p pool_id] -u username -n nome -e email -w password -t TENANTS -g USER|ADMIN [--email-verified]"
+      echo "Uso: $0 [-r regione] [-p pool_id] -u username -n nome -e email -w password -t TENANTS -g USER|ADMIN|ADMIN_DASHBOARD|PAGOPA [--email-verified]"
       exit 0 ;;
     *) echo "Argomento sconosciuto: $1"; exit 1 ;;
   esac
@@ -72,12 +72,12 @@ fi
 # GROUP obbligatorio con validazione USER/ADMIN
 if [[ -z "${GROUP:-}" ]]; then
   while true; do
-    GROUP="$(ask "Gruppo (USER/ADMIN/ADMIN_DASHBOARD) (obbligatorio)")"
-    [[ "$GROUP" == "USER" || "$GROUP" == "ADMIN" || "$GROUP" == "ADMIN_DASHBOARD" ]] && break
-    echo "Valido solo USER o ADMIN."
+    GROUP="$(ask "Gruppo (USER/ADMIN/ADMIN_DASHBOARD/PAGOPA) (obbligatorio)")"
+    [[ "$GROUP" == "USER" || "$GROUP" == "PAGOPA" || "$GROUP" == "ADMIN" || "$GROUP" == "ADMIN_DASHBOARD" ]] && break
+    echo "Valido solo USER, ADMIN, ADMIN_DASHBOARD o PAGOPA."
   done
 else
-  [[ "$GROUP" == "USER" || "$GROUP" == "ADMIN" || "$GROUP" == "ADMIN_DASHBOARD" ]] || { echo "Gruppo deve essere USER o ADMIN"; exit 2; }
+  [[ "$GROUP" == "USER" || "$GROUP" == "PAGOPA" || "$GROUP" == "ADMIN" || "$GROUP" == "ADMIN_DASHBOARD" ]] || { echo "Gruppo deve essere USER o ADMIN"; exit 2; }
 fi
 
 normalize_tenants_json() {
