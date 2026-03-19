@@ -7,8 +7,8 @@ set -eo pipefail
 
 # Determine the absolute path of the script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Set BASE_DIR to two directories up from the script location
-BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# Set BASE_DIR to three directories up from the script location (script -> sit -> aws -> artifacts)
+BASE_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Path for AWS SSM Parameter Store parameters
 GLOBAL_PARAM_PATH="/auxdromos/sit/global"
