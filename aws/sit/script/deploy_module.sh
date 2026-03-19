@@ -273,10 +273,25 @@ deploy_module() {
       while [ $(($(date +%s) - START_TIME)) -lt $TIMEOUT ]; do
           local container_logs=$(docker logs ${CONTAINER_NAME} 2>&1)
 
-          # Per rdbms, controlla prima se il container è ancora in esecuzione
+          # Per rdbms, controlla se il container si è fermato (normale dopo migration)
           if [[ "$module_to_deploy" == "rdbms" ]]; then
               if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-                  echo "❌ Container ${CONTAINER_NAME} non più in esecuzione durante l'inizializzazione"
+                  echo "Container ${CONTAINER_NAME} non più in esecuzione. Verifico log per esito migration..."
+                  local exit_logs=$(docker logs ${CONTAINER_NAME} 2>&1)
+                  for pattern in "${success_patterns[@]}"; do
+                      if echo "$exit_logs" | grep -q "$pattern"; then
+                          INITIALIZED=true
+                          echo "✅ Modulo rdbms: migration completata con successo (container si è fermato normalmente). Pattern: $pattern"
+                          break 2
+                      fi
+                  done
+                  # Se anche Stopping service Tomcat è nei log senza errori fatali, è OK
+                  if echo "$exit_logs" | grep -q "Stopping service" && ! echo "$exit_logs" | grep -q -E "(SEVERE|FATAL|OutOfMemoryError)"; then
+                      INITIALIZED=true
+                      echo "✅ Modulo rdbms: container si è fermato normalmente dopo esecuzione"
+                      break
+                  fi
+                  echo "❌ Container ${CONTAINER_NAME} si è fermato senza completare le migration"
                   break
               fi
           fi
