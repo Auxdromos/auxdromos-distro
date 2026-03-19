@@ -112,7 +112,7 @@ deploy_module() {
   # Verifica altre variabili globali/script necessarie qui, se serve
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
-  if [[ "$module_to_deploy" != "keycloak" && "$module_to_deploy" != "config" ]]; then
+  if [[ "$module_to_deploy" != "keycloak" ]]; then
     AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
     ENV_NAME="${ENV_NAME:-sit}"
     AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
