@@ -212,6 +212,9 @@ deploy_module() {
       docker image rm ${FULL_REPO_BASE}/${REPO_NAME}:latest >/dev/null 2>&1 || true
   fi
 
+  # Ricrea la rete se è stata rimossa dal prune
+  docker network create auxdromos-network >/dev/null 2>&1 || true
+
   echo "Avvio container ${CONTAINER_NAME} con docker-compose..."
   # --- COMANDO DOCKER-COMPOSE MODIFICATO: SENZA --env-file ---
   # Usa le variabili esportate da fetch_and_export_params e quelle del tag
