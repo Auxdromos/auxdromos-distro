@@ -112,60 +112,56 @@ deploy_module() {
   # Verifica altre variabili globali/script necessarie qui, se serve
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
-  if [[ "$module_to_deploy" != "keycloak" ]]; then
-    AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-    ENV_NAME="${ENV_NAME:-sit}"
-    AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
-    FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-    REPO_NAME="auxdromos-${module_to_deploy}"
+  AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+  ENV_NAME="${ENV_NAME:-sit}"
+  AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+  FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+  REPO_NAME="auxdromos-${module_to_deploy}"
 
-    echo "Recupero tag (semver) per ${REPO_NAME}..."
+  echo "Recupero tag (semver) per ${REPO_NAME}..."
 
-    # Prendi TUTTI i tag (solo TAGGED), sanifica, filtra semver, scegli il più alto
-    TAGS_RAW=$(aws ecr describe-images \
-      --repository-name "${REPO_NAME}" \
+  # Prendi TUTTI i tag (solo TAGGED), sanifica, filtra semver, scegli il più alto
+  TAGS_RAW=$(aws ecr describe-images \
+    --repository-name "${REPO_NAME}" \
+    --region "${AWS_DEFAULT_REGION}" \
+    --filter tagStatus=TAGGED \
+    --query 'imageDetails[].imageTags[]' \
+    --output text || true)
+
+  LATEST_TAG=$(printf '%s\n' "${TAGS_RAW}" \
+    | tr -d '\r' | tr '\t' '\n' \
+    | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -V | tail -1)
+
+  if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
+    echo "Tag ECR assente. Fallback SSM..."
+    LATEST_TAG=$(aws ssm get-parameter \
+      --name "/auxdromos/${ENV_NAME}/${module_to_deploy}/IMAGE_TAG" \
       --region "${AWS_DEFAULT_REGION}" \
-      --filter tagStatus=TAGGED \
-      --query 'imageDetails[].imageTags[]' \
-      --output text || true)
-
-    LATEST_TAG=$(printf '%s\n' "${TAGS_RAW}" \
-      | tr -d '\r' | tr '\t' '\n' \
-      | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
-      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-      | sort -V | tail -1)
-
-    if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
-      echo "Tag ECR assente. Fallback SSM..."
-      LATEST_TAG=$(aws ssm get-parameter \
-        --name "/auxdromos/${ENV_NAME}/${module_to_deploy}/IMAGE_TAG" \
-        --region "${AWS_DEFAULT_REGION}" \
-        --query 'Parameter.Value' --output text 2>/dev/null || true)
-      LATEST_TAG="$(printf '%s' "${LATEST_TAG}" | tr -d '\r\n' | xargs)"
-    fi
-
-    if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
-      echo "Errore: nessun tag semver valido per ${REPO_NAME}."; exit 1
-    fi
-
-    echo "Tag scelto (max semver): ${LATEST_TAG}"
-    IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
-
-    upper_modulo="${module_to_deploy^^}"; upper_modulo="${upper_modulo//-/_}"
-    DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
-    DOCKER_IMAGE_VAR="${upper_modulo}_IMAGE"
-
-    export "${DOCKER_TAG_VAR}=${LATEST_TAG}"
-    export "${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}"
-    echo "Esportata variabile: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
-    echo "Esportata variabile: ${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}"
-
-    echo "Login ECR..."
-    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
-      | docker login --username AWS --password-stdin "${FULL_REPO_BASE}"
-  else
-    LATEST_TAG="N/A"
+      --query 'Parameter.Value' --output text 2>/dev/null || true)
+    LATEST_TAG="$(printf '%s' "${LATEST_TAG}" | tr -d '\r\n' | xargs)"
   fi
+
+  if [[ -z "${LATEST_TAG}" || "${LATEST_TAG}" == "None" ]]; then
+    echo "Errore: nessun tag semver valido per ${REPO_NAME}."; exit 1
+  fi
+
+  echo "Tag scelto (max semver): ${LATEST_TAG}"
+  IMAGE_NAME_WITH_TAG="${FULL_REPO_BASE}/${REPO_NAME}:${LATEST_TAG}"
+
+  upper_modulo="${module_to_deploy^^}"; upper_modulo="${upper_modulo//-/_}"
+  DOCKER_TAG_VAR="${upper_modulo}_IMAGE_TAG"
+  DOCKER_IMAGE_VAR="${upper_modulo}_IMAGE"
+
+  export "${DOCKER_TAG_VAR}=${LATEST_TAG}"
+  export "${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}"
+  echo "Esportata variabile: ${DOCKER_TAG_VAR}=${LATEST_TAG}"
+  echo "Esportata variabile: ${DOCKER_IMAGE_VAR}=${IMAGE_NAME_WITH_TAG}"
+
+  echo "Login ECR..."
+  aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
+    | docker login --username AWS --password-stdin "${FULL_REPO_BASE}"
   # --- FINE LOGICA ECR ---
 
   # Vai alla directory del docker-compose
@@ -401,7 +397,7 @@ MODULO_ARG=$1
 if [[ -z "$MODULO_ARG" ]]; then
   echo "Errore: nessun modulo specificato. Specificare un modulo o 'all' per deployare tutto."
   # Potremmo leggere MODULES da SSM qui, ma per ora lo lasciamo hardcoded nell'errore
-  echo "Esempio Moduli: config rdbms keycloak gateway backend idp"
+  echo "Esempio Moduli: config rdbms idp backend gateway print-service admin-dashboard"
   exit 1
 fi
 
@@ -455,13 +451,13 @@ if ! fetch_and_export_params "$SCRIPT_PARAM_PATH" "$AWS_DEFAULT_REGION"; then
     # Imposta default essenziali se SSM fallisce e stiamo facendo 'all'
     if [[ "$MODULO_ARG" == "all" && -z "$MODULE_ORDER" ]]; then
         echo "Imposto MODULE_ORDER di default: config rdbms keycloak idp backend gateway"
-        export MODULE_ORDER="config rdbms keycloak idp backend gateway"
+        export MODULE_ORDER="config rdbms idp backend gateway print-service admin-dashboard"
     fi
 else
     # Se MODULE_ORDER non è stato caricato nemmeno con successo, imposta default
      if [[ "$MODULO_ARG" == "all" && -z "$MODULE_ORDER" ]]; then
         echo "Attenzione: MODULE_ORDER vuoto dopo recupero da SSM. Imposto default."
-        export MODULE_ORDER="config rdbms keycloak idp backend gateway"
+        export MODULE_ORDER="config rdbms idp backend gateway print-service admin-dashboard"
     fi
 fi
 echo "Configurazione iniziale caricata."
@@ -471,11 +467,6 @@ echo "Configurazione iniziale caricata."
 # Esegui l'azione richiesta
 if [[ "$MODULO_ARG" == "all" ]]; then
   deploy_all
-elif [[ "$MODULO_ARG" == "keycloak" ]]; then
-  # Se vuoi usare la funzione separata deploy_keycloak (con docker run):
-  # deploy_keycloak
-  # Altrimenti, se è gestito da compose come gli altri:
-  deploy_module "$MODULO_ARG"
 else
   # Deploy di un modulo singolo gestito da compose
   deploy_module "$MODULO_ARG"

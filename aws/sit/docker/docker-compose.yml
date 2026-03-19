@@ -69,50 +69,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  keycloak:
-    # Immagine Keycloak standard
-    image: quay.io/keycloak/keycloak:26.0.7
-    container_name: auxdromos-keycloak
-    ports:
-      # Usa le variabili d'ambiente esportate dallo script
-      - "${EXTERNAL_PORT:-8082}:${INTERNAL_PORT:-8080}" # Aggiunti default
-      - "9090:9000"
-    environment:
-      # Queste verranno lette dall'ambiente esterno (esportate dallo script)
-      KC_DB: ${KC_DB:-postgres}
-      KC_DB_URL_HOST: ${KC_DB_URL_HOST}
-      KC_DB_URL_DATABASE: ${KC_DB_URL_DATABASE}
-      KC_DB_USERNAME: ${KC_DB_USERNAME}
-      KC_DB_PASSWORD: ${KC_DB_PASSWORD} # Letta da env (SecureString da SSM)
-      KC_DB_SCHEMA: ${KC_DB_SCHEMA:-keycloak}
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD} # Letta da env (SecureString da SSM)
-      KC_HOSTNAME: ${KC_HOSTNAME:-https://sit.idp.auxdromos.it}
-      KC_HTTP_ENABLED: ${KC_HTTP_ENABLED:-true}
-      KC_PROXY: ${KC_PROXY:-edge}
-      KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH:-/}
-      KC_HOSTNAME_ADMIN: ${KC_HOSTNAME_ADMIN:-https://sit.idp.auxdromos.it}
-      KC_HOSTNAME_STRICT_HTTPS: ${KC_HOSTNAME_STRICT_HTTPS:-true}
-      KC_HOSTNAME_STRICT: ${KC_HOSTNAME_STRICT:-false}
-      KC_HEALTH_ENABLED: ${KC_HEALTH_ENABLED:-true}
-      KC_HTTP_MAX_CONNECTIONS: ${KC_HTTP_MAX_CONNECTIONS:-50000}
-      QUARKUS_HTTP_ACCESS_LOG_ENABLED: ${QUARKUS_HTTP_ACCESS_LOG_ENABLED:-true}
-    deploy:
-      resources:
-        limits:
-          memory: 1536M
-        reservations:
-          memory: 1G
-    command: start
-    restart: unless-stopped
-    networks:
-      - auxdromos-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   idp:
     # Usa variabili d'ambiente per tag, account e regione
     image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:${IDP_IMAGE_TAG:-latest}
