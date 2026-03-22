@@ -136,6 +136,47 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  pagodesk-service:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-pagodesk-service:${PAGODESK_SERVICE_IMAGE_TAG:-latest}
+    container_name: auxdromos-pagodesk-service
+    ports:
+      - "${EXTERNAL_PORT:-8084}:${INTERNAL_PORT:-8084}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "${PROFILE:-sit}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-sit}"
+      SPRING_APPLICATION_NAME: "pagodesk"
+      JAVA_TOOL_OPTIONS: >-
+        -Xmx768m
+        -XX:MaxRAMPercentage=75.0
+        -Duser.timezone=Europe/Rome
+      DB_URL: "${DB_URL}"
+      DB_USERNAME: "${DB_USERNAME}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      PAGOPA_HMAC_SECRET: "${PAGOPA_HMAC_SECRET}"
+      PAGOPA_RECEIPTS_SUBSCRIPTION_KEY: "${PAGOPA_RECEIPTS_SUBSCRIPTION_KEY}"
+      PAGOPA_GDP_SUBSCRIPTION_KEY: "${PAGOPA_GDP_SUBSCRIPTION_KEY}"
+      PAGOPA_FDR_SUBSCRIPTION_KEY: "${PAGOPA_FDR_SUBSCRIPTION_KEY}"
+      PAGOPA_PRINT_SUBSCRIPTION_KEY: "${PAGOPA_PRINT_SUBSCRIPTION_KEY}"
+      PAGOPA_RECEIPT_HMAC_SECRET_KEY: "${PAGOPA_RECEIPT_HMAC_SECRET_KEY}"
+      PAGOPA_API_BASE_URL: "${PAGOPA_API_BASE_URL}"
+      SQS_BULK_OPERATIONS_QUEUE_URL: "${SQS_BULK_OPERATIONS_QUEUE_URL}"
+      SQS_EMAIL_RETRY_QUEUE_URL: "${SQS_EMAIL_RETRY_QUEUE_URL}"
+      SQS_DOMAIN_EVENTS_QUEUE_URL: "${SQS_DOMAIN_EVENTS_QUEUE_URL}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   gateway:
     # Uses environment variables for tag, account, and region
     image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:${GATEWAY_IMAGE_TAG:-latest}
