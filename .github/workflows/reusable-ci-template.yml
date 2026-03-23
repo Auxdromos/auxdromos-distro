@@ -1,5 +1,6 @@
 # .github/workflows/reusable-ci-template.yml
 # Workflow riutilizzabile per build, test, package, deploy di moduli AuxDromos
+# Supporta ambienti SIT (branch main) e PRO (branch pro)
 name: Reusable AuxDromos CI/CD
 
 permissions:
@@ -9,35 +10,95 @@ permissions:
 
 on:
   workflow_call:
-    # Definisci gli input che il workflow chiamante può passare
+    # Definisci gli input che il workflow chiamante puo' passare
     inputs:
       java-version:
         description: 'Versione JDK da usare'
         required: false
         type: string
         default: '17'
-      maven-profiles: # <-- NUOVO INPUT
-        description: 'Profili Maven da attivare (es. -Psit,prod)'
+      maven-profiles:
+        description: 'Profili Maven da attivare (es. -Psit, -Ppro)'
         required: false
         type: string
-        default: '-Psit' # Default per mantenere comportamento precedente
+        default: '-Psit'
       artifact-retention-days:
         description: 'Numero di giorni dopo i quali gli artifact vengono eliminati'
         required: false
         type: number
         default: 7
 
-    # Non sono più richiesti segreti AWS/EC2 dal chiamante
     secrets:
       GITHUB_PACKAGES_TOKEN:
         required: false
         description: 'Token per accedere ai repository GitHub privati'
 
-# Imposta la regione AWS staticamente
+# Regione AWS dinamica in base al branch
+# SIT (main) -> us-east-1, PRO (pro) -> eu-central-1
 env:
-  AWS_REGION: us-east-1 # <-- IMPOSTA QUI LA TUA REGIONE STATICA
+  AWS_REGION: us-east-1
 
 jobs:
+  # --- Job di setup per determinare la configurazione ambiente ---
+  setup_environment:
+    name: Setup Environment Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      aws_region: ${{ steps.env-config.outputs.aws_region }}
+      iam_role: ${{ steps.env-config.outputs.iam_role }}
+      environment_name: ${{ steps.env-config.outputs.environment_name }}
+      is_deployable_branch: ${{ steps.env-config.outputs.is_deployable_branch }}
+      ssm_s3_bucket_param: ${{ steps.env-config.outputs.ssm_s3_bucket_param }}
+      ssm_ec2_user_param: ${{ steps.env-config.outputs.ssm_ec2_user_param }}
+      ssm_ec2_host_param: ${{ steps.env-config.outputs.ssm_ec2_host_param }}
+      ssm_ec2_key_param: ${{ steps.env-config.outputs.ssm_ec2_key_param }}
+      ssm_slack_webhook_param: ${{ steps.env-config.outputs.ssm_slack_webhook_param }}
+      deploy_script_path: ${{ steps.env-config.outputs.deploy_script_path }}
+    steps:
+      - name: Determine Environment Configuration
+        id: env-config
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          echo "Branch rilevato: $BRANCH"
+
+          if [[ "$BRANCH" == "pro" ]]; then
+            echo "Configurazione ambiente PRO (Produzione)"
+            echo "aws_region=eu-central-1" >> $GITHUB_OUTPUT
+            echo "iam_role=arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole-PRO" >> $GITHUB_OUTPUT
+            echo "environment_name=pro" >> $GITHUB_OUTPUT
+            echo "is_deployable_branch=true" >> $GITHUB_OUTPUT
+            echo "ssm_s3_bucket_param=/github/common/s3_bucket_name_pro" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_user_param=/github/pro/ec2_user" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_host_param=/github/pro/ec2_host" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_key_param=/github/pro/ec2_private_key" >> $GITHUB_OUTPUT
+            echo "ssm_slack_webhook_param=/auxdromos/pro/global/slack_webhook_url" >> $GITHUB_OUTPUT
+            echo "deploy_script_path=/app/distro/artifacts/aws/pro/script/deploy_module.sh" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "main" ]]; then
+            echo "Configurazione ambiente SIT"
+            echo "aws_region=us-east-1" >> $GITHUB_OUTPUT
+            echo "iam_role=arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole" >> $GITHUB_OUTPUT
+            echo "environment_name=sit" >> $GITHUB_OUTPUT
+            echo "is_deployable_branch=true" >> $GITHUB_OUTPUT
+            echo "ssm_s3_bucket_param=/github/common/s3_bucket_name" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_user_param=/github/sit/ec2_user" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_host_param=/github/sit/ec2_host" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_key_param=/github/sit/ec2_private_key" >> $GITHUB_OUTPUT
+            echo "ssm_slack_webhook_param=/auxdromos/sit/global/slack_webhook_url" >> $GITHUB_OUTPUT
+            echo "deploy_script_path=/app/distro/artifacts/aws/sit/script/deploy_module.sh" >> $GITHUB_OUTPUT
+          else
+            echo "Branch non deployabile: $BRANCH"
+            echo "aws_region=us-east-1" >> $GITHUB_OUTPUT
+            echo "iam_role=arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole" >> $GITHUB_OUTPUT
+            echo "environment_name=dev" >> $GITHUB_OUTPUT
+            echo "is_deployable_branch=false" >> $GITHUB_OUTPUT
+            echo "ssm_s3_bucket_param=/github/common/s3_bucket_name" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_user_param=" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_host_param=" >> $GITHUB_OUTPUT
+            echo "ssm_ec2_key_param=" >> $GITHUB_OUTPUT
+            echo "ssm_slack_webhook_param=/auxdromos/sit/global/slack_webhook_url" >> $GITHUB_OUTPUT
+            echo "deploy_script_path=" >> $GITHUB_OUTPUT
+          fi
+
   extract_module_info:
     name: Prepare - Extract Module Info
     runs-on: ubuntu-latest
@@ -74,10 +135,10 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
   check_version:
-    name: Check Version Existence (Main Branch Only)
+    name: Check Version Existence (Deployable Branches Only)
     runs-on: ubuntu-latest
-    needs: extract_module_info
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    needs: [extract_module_info, setup_environment]
+    if: github.event_name == 'push' && needs.setup_environment.outputs.is_deployable_branch == 'true'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
@@ -88,14 +149,14 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ needs.setup_environment.outputs.iam_role }}
+          aws-region: ${{ needs.setup_environment.outputs.aws_region }}
 
       - name: Run Version Check Script
         run: |
           set -e
           set -o pipefail
-          echo "Verifica della versione per il branch 'main'..."
+          echo "Verifica della versione per il branch '${{ github.ref_name }}'..."
 
           if [[ -z "$MODULE_NAME" ]] || [[ -z "$VERSION" ]]; then
             echo "ERRORE: MODULE_NAME ('$MODULE_NAME') o VERSION ('$VERSION') sono vuote."
@@ -103,25 +164,26 @@ jobs:
           fi
 
           if [[ "$VERSION" == *"SNAPSHOT"* ]]; then
-            echo "Errore: Versione '$VERSION' non valida in 'main' (SNAPSHOT non consentito)."
+            echo "Errore: Versione '$VERSION' non valida (SNAPSHOT non consentito su branch deployabili)."
             exit 1
           fi
 
+          AWS_REGION="${{ needs.setup_environment.outputs.aws_region }}"
           ECR_REPO_NAME="auxdromos-$MODULE_NAME"
-          echo "Controllo se il repository ECR '$ECR_REPO_NAME' esiste..."
+          echo "Controllo se il repository ECR '$ECR_REPO_NAME' esiste in $AWS_REGION..."
           if ! aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$AWS_REGION" > /dev/null 2>&1; then
-            echo "ATTENZIONE: Repository ECR '$ECR_REPO_NAME' non esiste ancora; verrà creato più tardi."
+            echo "ATTENZIONE: Repository ECR '$ECR_REPO_NAME' non esiste ancora; verra' creato piu' tardi."
           else
-            echo "Repository ECR trovato. Controllo se la versione '$VERSION' è già presente..."
+            echo "Repository ECR trovato. Controllo se la versione '$VERSION' e' gia' presente..."
             if aws ecr describe-images --repository-name "$ECR_REPO_NAME" \
                                       --image-ids imageTag="$VERSION" \
                                       --region "$AWS_REGION" > /dev/null 2>&1; then
-              echo "ERRORE: L'immagine '$ECR_REPO_NAME:$VERSION' è già presente."
+              echo "ERRORE: L'immagine '$ECR_REPO_NAME:$VERSION' e' gia' presente."
               exit 1
             fi
           fi
 
-          echo "Versione '$VERSION' valida per 'main'. Procedo..."
+          echo "Versione '$VERSION' valida. Procedo..."
 
   build:
     name: Build Project
@@ -182,7 +244,8 @@ jobs:
             target/distribution/
             target/build-info.json
           if-no-files-found: error
-          retention-days: 1    # abbassa da default (90 giorni) a 1–5 giorni
+          retention-days: 1
+
   test:
     name: Test Project
     runs-on: ubuntu-latest
@@ -221,10 +284,10 @@ jobs:
           mvn test
 
   package_configs:
-    name: Package Configuration Files (Main Branch Only)
+    name: Package Configuration Files (Deployable Branches Only)
     runs-on: ubuntu-latest
-    needs: extract_module_info
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    needs: [extract_module_info, setup_environment]
+    if: github.event_name == 'push' && needs.setup_environment.outputs.is_deployable_branch == 'true'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
@@ -264,7 +327,7 @@ jobs:
             zip -r "dist/$MODULE_NAME-$VERSION.zip" empty.txt
             rm empty.txt
           fi
-          if [ -f "dist/$MODULE_NAME-$VERSION.zip" ]; then echo "File ZIP creato dist/$MODULE_NAME-$VERSION.zip"; else echo "ERRORE Il file ZIP non è stato creato"; exit 1; fi
+          if [ -f "dist/$MODULE_NAME-$VERSION.zip" ]; then echo "File ZIP creato dist/$MODULE_NAME-$VERSION.zip"; else echo "ERRORE Il file ZIP non e' stato creato"; exit 1; fi
 
           echo "{\"moduleName\":\"$MODULE_NAME\",\"version\":\"$VERSION\",\"buildDate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"branch\":\"${{ github.ref_name }}\",\"commitHash\":\"${{ github.sha }}\"}" > dist/manifest.json
 
@@ -274,13 +337,13 @@ jobs:
           name: config-package-${{ needs.extract_module_info.outputs.module_name }}-${{ needs.extract_module_info.outputs.version }}-${{ github.run_id }}
           path: dist/
           if-no-files-found: error
-          retention-days: 1    # abbassa da default (90 giorni) a 1–5 giorni
+          retention-days: 1
 
   build_docker:
-    name: Build and Push Docker Image (Main Branch Only)
+    name: Build and Push Docker Image (Deployable Branches Only)
     runs-on: ubuntu-latest
-    needs: [extract_module_info, build]
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    needs: [extract_module_info, build, setup_environment]
+    if: github.event_name == 'push' && needs.setup_environment.outputs.is_deployable_branch == 'true'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
@@ -301,8 +364,8 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ needs.setup_environment.outputs.iam_role }}
+          aws-region: ${{ needs.setup_environment.outputs.aws_region }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -313,6 +376,8 @@ jobs:
 
       - name: Check for Dockerfile and Build/Push
         id: docker_build
+        env:
+          AWS_REGION: ${{ needs.setup_environment.outputs.aws_region }}
         run: |
           if [ -f "Dockerfile" ]; then
             echo "Dockerfile trovato per $MODULE_NAME, procedo con build e push"
@@ -321,14 +386,12 @@ jobs:
               (echo "Repository ECR '${ECR_REPOSITORY}' non esiste, lo creo..." && \
                aws ecr create-repository --repository-name "${ECR_REPOSITORY}" --region "${AWS_REGION}" && \
                echo "Repository ECR creato con successo.") || \
-              (echo "Repository ECR '${ECR_REPOSITORY}' esiste già.")
+              (echo "Repository ECR '${ECR_REPOSITORY}' esiste gia'.")
 
             ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
             IMAGE_TAG="${ECR_REGISTRY}/${ECR_REPOSITORY}:${VERSION}"
 
             echo "Building image: ${IMAGE_TAG}"
-            DOCKER_BUILD_ARGS=""
-            # Potresti recuperare BUILD_ARGS da SSM se necessario
 
             docker buildx build --push \
             --build-arg GH_PACKAGES_TOKEN=${{ secrets.GITHUB_PACKAGES_TOKEN }} \
@@ -346,12 +409,11 @@ jobs:
   upload_to_s3:
     name: Upload Artifacts to S3
     runs-on: ubuntu-latest
-    needs: [extract_module_info, build, package_configs]
-    if: github.ref_name == 'main' && github.event_name == 'push'
+    needs: [extract_module_info, build, package_configs, setup_environment]
+    if: github.event_name == 'push' && needs.setup_environment.outputs.is_deployable_branch == 'true'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name' # Esempio
     permissions:
       id-token: write
       contents: read
@@ -374,14 +436,15 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ needs.setup_environment.outputs.iam_role }}
+          aws-region: ${{ needs.setup_environment.outputs.aws_region }}
 
       - name: Fetch S3 Bucket Name from Parameter Store
         id: get-s3-bucket
         run: |
-          S3_BUCKET=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
-          if [[ -z "$S3_BUCKET" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
+          SSM_PARAM="${{ needs.setup_environment.outputs.ssm_s3_bucket_param }}"
+          S3_BUCKET=$(aws ssm get-parameter --name "$SSM_PARAM" --query Parameter.Value --output text)
+          if [[ -z "$S3_BUCKET" ]]; then echo "ERRORE: Valore vuoto per $SSM_PARAM"; exit 1; fi
           echo "S3_BUCKET_NAME=$S3_BUCKET" >> $GITHUB_ENV
 
       - name: Upload to S3
@@ -389,13 +452,7 @@ jobs:
           S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
         run: |
           set -e
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            S3_PATH="${MODULE_NAME}/${VERSION}/"
-          else
-            echo "ERRORE: Upload S3 configurato solo per il branch 'main'."
-            exit 1
-          fi
-
+          S3_PATH="${MODULE_NAME}/${VERSION}/"
           S3_URI="s3://${S3_BUCKET_NAME}/${S3_PATH}"
           echo "Uploading artifacts for $MODULE_NAME version $VERSION into ${S3_URI}"
 
@@ -430,14 +487,13 @@ jobs:
           aws s3 ls "${S3_URI}" --recursive
 
   tag_latest:
-    name: Tag Latest Version in S3 (Main Branch Only)
+    name: Tag Latest Version in S3 (Deployable Branches Only)
     runs-on: ubuntu-latest
-    needs: [extract_module_info, upload_to_s3]
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    needs: [extract_module_info, upload_to_s3, setup_environment]
+    if: github.event_name == 'push' && needs.setup_environment.outputs.is_deployable_branch == 'true'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name' # Esempio
     permissions:
       id-token: write
       contents: read
@@ -445,14 +501,15 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ needs.setup_environment.outputs.iam_role }}
+          aws-region: ${{ needs.setup_environment.outputs.aws_region }}
 
       - name: Fetch S3 Bucket Name from Parameter Store
         id: get-s3-bucket
         run: |
-          S3_BUCKET=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
-          if [[ -z "$S3_BUCKET" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
+          SSM_PARAM="${{ needs.setup_environment.outputs.ssm_s3_bucket_param }}"
+          S3_BUCKET=$(aws ssm get-parameter --name "$SSM_PARAM" --query Parameter.Value --output text)
+          if [[ -z "$S3_BUCKET" ]]; then echo "ERRORE: Valore vuoto per $SSM_PARAM"; exit 1; fi
           echo "S3_BUCKET_NAME=$S3_BUCKET" >> $GITHUB_ENV
 
       - name: Create and Upload latest.json
@@ -460,14 +517,8 @@ jobs:
           S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
         run: |
           set -e
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            LATEST_PATH="${MODULE_NAME}/latest.json"
-            S3_BASE_PATH="${MODULE_NAME}/"
-          else
-            echo "ERRORE: Tag Latest configurato solo per il branch 'main'."
-            exit 1
-          fi
-
+          LATEST_PATH="${MODULE_NAME}/latest.json"
+          S3_BASE_PATH="${MODULE_NAME}/"
           S3_URI="s3://${S3_BUCKET_NAME}/${LATEST_PATH}"
 
           cat > latest.json <<EOF
@@ -476,7 +527,8 @@ jobs:
             "latestVersion": "$VERSION",
             "updateDate": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
             "branch": "${{ github.ref_name }}",
-            "commitHash": "${{ github.sha }}"
+            "commitHash": "${{ github.sha }}",
+            "environment": "${{ needs.setup_environment.outputs.environment_name }}"
           }
           EOF
 
@@ -485,21 +537,18 @@ jobs:
           echo "Contenuto di latest.json caricato:"
           cat latest.json
 
-  # --- JOB cleanup_s3 RIMOSSO ---
-  # Si assume l'uso di S3 Lifecycle Policies
-
   deploy_sit:
     name: Deploy to SIT Environment (Main Branch Only)
     runs-on: ubuntu-latest
-    needs: [extract_module_info, upload_to_s3, build_docker] # Dipende ancora da upload_to_s3 per il deploy di 'distro'
+    needs: [extract_module_info, upload_to_s3, build_docker, setup_environment]
     if: github.event_name == 'push' && github.ref_name == 'main'
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      SSM_EC2_USER_PARAM: '/github/sit/ec2_user'
-      SSM_EC2_HOST_PARAM: '/github/sit/ec2_host'
-      SSM_EC2_KEY_PARAM: '/github/sit/ec2_private_key'
-      SSM_S3_BUCKET_PARAM: '/github/common/s3_bucket_name'
+      SSM_EC2_USER_PARAM: ${{ needs.setup_environment.outputs.ssm_ec2_user_param }}
+      SSM_EC2_HOST_PARAM: ${{ needs.setup_environment.outputs.ssm_ec2_host_param }}
+      SSM_EC2_KEY_PARAM: ${{ needs.setup_environment.outputs.ssm_ec2_key_param }}
+      SSM_S3_BUCKET_PARAM: ${{ needs.setup_environment.outputs.ssm_s3_bucket_param }}
     permissions:
       id-token: write
       contents: read
@@ -507,8 +556,8 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ needs.setup_environment.outputs.iam_role }}
+          aws-region: ${{ needs.setup_environment.outputs.aws_region }}
 
       - name: Fetch EC2 Details and S3 Bucket from Parameter Store
         id: fetch-secrets
@@ -534,11 +583,9 @@ jobs:
           echo "$EC2_KEY_VAL" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-          echo "DEBUG: Valore EC2_HOST_VAL prima di GITHUB_ENV: ->${EC2_HOST_VAL}<-"
           echo "EC2_USER=$EC2_USER_VAL" >> $GITHUB_ENV
           echo "EC2_HOST=$EC2_HOST_VAL" >> $GITHUB_ENV
           echo "S3_BUCKET_NAME=$S3_BUCKET_VAL" >> $GITHUB_ENV
-          echo "DEBUG: Variabili impostate in GITHUB_ENV."
 
           SSH_KEY_PATH=$(mktemp)
           echo "$EC2_KEY_VAL" > "$SSH_KEY_PATH"
@@ -552,9 +599,8 @@ jobs:
 
       - name: Add EC2 Host to Known Hosts
         run: |
-          echo "DEBUG: Valore EC2_HOST all'inizio dello step: ->${EC2_HOST}<-"
           if [[ -z "$EC2_HOST" ]]; then
-            echo "ERRORE: La variabile EC2_HOST è vuota!"
+            echo "ERRORE: La variabile EC2_HOST e' vuota!"
             exit 1
           fi
           mkdir -p ~/.ssh
@@ -569,7 +615,7 @@ jobs:
           EC2_HOST: ${{ env.EC2_HOST }}
         run: |
           set -e
-          echo "Deploying module $MODULE_NAME, versione $VERSION to $EC2_HOST"
+          echo "Deploying module $MODULE_NAME, versione $VERSION to $EC2_HOST (SIT)"
 
           if [ "$MODULE_NAME" = "distro" ]; then
              echo "[Deploy] Modulo distro: scarico gli artifact da S3 e li carico su EC2..."
@@ -585,7 +631,7 @@ jobs:
              if [ $? -ne 0 ]; then echo "[Deploy] ERRORE: Download da S3 fallito."; exit 1; fi
 
              echo "[Deploy] Download da S3 completato. Verifico contenuto locale in ${LOCAL_TARGET_PATH}:"; ls -lR "${LOCAL_TARGET_PATH}"
-             if [ -z "$(ls -A ${LOCAL_TARGET_PATH})" ]; then echo "[Deploy] ERRORE: La directory ${LOCAL_TARGET_PATH} è vuota."; exit 1; fi
+             if [ -z "$(ls -A ${LOCAL_TARGET_PATH})" ]; then echo "[Deploy] ERRORE: La directory ${LOCAL_TARGET_PATH} e' vuota."; exit 1; fi
 
              echo "[Deploy] Eseguo comandi remoti su ${EC2_USER}@${EC2_HOST}..."
              ssh ${EC2_USER}@${EC2_HOST} "
@@ -606,9 +652,9 @@ jobs:
                ZIP_FILE=\"${MODULE_NAME}-${VERSION}.zip\"
                if ls \$ZIP_FILE >/dev/null 2>&1; then
                  echo '[Deploy Remote] ZIP trovato. Estraggo...'
-                 sudo apt-get update > /dev/null && sudo apt-get install -y unzip > /dev/null || echo 'unzip già installato o errore installazione'
+                 sudo apt-get update > /dev/null && sudo apt-get install -y unzip > /dev/null || echo 'unzip gia' installato o errore installazione'
                  unzip -o \$ZIP_FILE
-                 if [ \$? -ne 0 ]; then # <-- Modifica per sintassi YAML
+                 if [ \$? -ne 0 ]; then
                    echo '[Deploy Remote] ERRORE: unzip fallito.'
                    exit 1
                  fi
@@ -625,7 +671,7 @@ jobs:
           else
              echo "[Deploy] Modulo $MODULE_NAME (non-distro): uso deploy_module.sh."
              REMOTE_APP_PATH="/app/${MODULE_NAME}"
-             REMOTE_DISTRO_SCRIPT_PATH="/app/distro/artifacts/aws/sit/script/deploy_module.sh"
+             REMOTE_DISTRO_SCRIPT_PATH="${{ needs.setup_environment.outputs.deploy_script_path }}"
 
              ssh ${EC2_USER}@${EC2_HOST} "
                set -e
@@ -650,16 +696,20 @@ jobs:
         if: always()
         run: rm -f "${{ steps.fetch-secrets.outputs.SSH_KEY_PATH }}"
 
-  slack_notification:
-    name: Send Slack Notification
+  deploy_pro:
+    name: Deploy to PRO Environment (Pro Branch Only)
     runs-on: ubuntu-latest
-    # Dipende da tutti i job per rilevare correttamente i fallimenti
-    needs: [extract_module_info, build, test, upload_to_s3, tag_latest, deploy_sit, build_docker]
-    if: always() # Esegui sempre, anche se i job precedenti falliscono
+    needs: [extract_module_info, upload_to_s3, build_docker, setup_environment]
+    if: github.event_name == 'push' && github.ref_name == 'pro'
+    environment:
+      name: production
     env:
       MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
       VERSION: ${{ needs.extract_module_info.outputs.version }}
-      SSM_SLACK_WEBHOOK_PARAM: '/auxdromos/sit/global/slack_webhook_url' # Parametro SSM per il webhook Slack
+      SSM_EC2_USER_PARAM: ${{ needs.setup_environment.outputs.ssm_ec2_user_param }}
+      SSM_EC2_HOST_PARAM: ${{ needs.setup_environment.outputs.ssm_ec2_host_param }}
+      SSM_EC2_KEY_PARAM: ${{ needs.setup_environment.outputs.ssm_ec2_key_param }}
+      SSM_S3_BUCKET_PARAM: ${{ needs.setup_environment.outputs.ssm_s3_bucket_param }}
     permissions:
       id-token: write
       contents: read
@@ -667,14 +717,161 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::463470955561:role/GitHubActions-AuxDromos-DeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ needs.setup_environment.outputs.iam_role }}
+          aws-region: ${{ needs.setup_environment.outputs.aws_region }}
+
+      - name: Fetch EC2 Details and S3 Bucket from Parameter Store
+        id: fetch-secrets
+        run: |
+          set -e
+          echo "Recupero parametri SSM per PRO..."
+          EC2_USER_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_USER_PARAM }}" --query Parameter.Value --output text)
+          EC2_HOST_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_HOST_PARAM }}" --query Parameter.Value --output text)
+          EC2_KEY_VAL=$(aws ssm get-parameter --name "${{ env.SSM_EC2_KEY_PARAM }}" --with-decryption --query Parameter.Value --output text)
+          S3_BUCKET_VAL=$(aws ssm get-parameter --name "${{ env.SSM_S3_BUCKET_PARAM }}" --query Parameter.Value --output text)
+          echo "Parametri recuperati."
+
+          if [[ -z "$EC2_USER_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_USER_PARAM"; exit 1; fi
+          if [[ -z "$EC2_HOST_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_HOST_PARAM"; exit 1; fi
+          if [[ -z "$EC2_KEY_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_EC2_KEY_PARAM (SecureString)"; exit 1; fi
+          if [[ -z "$S3_BUCKET_VAL" ]]; then echo "ERRORE: Valore vuoto per SSM_S3_BUCKET_PARAM"; exit 1; fi
+
+          echo "::add-mask::$EC2_KEY_VAL"
+
+          echo "SSH_KEY_CONTENT<<EOF" >> $GITHUB_OUTPUT
+          echo "$EC2_KEY_VAL" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "EC2_USER=$EC2_USER_VAL" >> $GITHUB_ENV
+          echo "EC2_HOST=$EC2_HOST_VAL" >> $GITHUB_ENV
+          echo "S3_BUCKET_NAME=$S3_BUCKET_VAL" >> $GITHUB_ENV
+
+          SSH_KEY_PATH=$(mktemp)
+          echo "$EC2_KEY_VAL" > "$SSH_KEY_PATH"
+          chmod 600 "$SSH_KEY_PATH"
+          echo "SSH_KEY_PATH=$SSH_KEY_PATH" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ steps.fetch-secrets.outputs.SSH_KEY_CONTENT }}
+
+      - name: Add EC2 Host to Known Hosts
+        run: |
+          if [[ -z "$EC2_HOST" ]]; then
+            echo "ERRORE: La variabile EC2_HOST e' vuota!"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          echo "Aggiungo host $EC2_HOST a known_hosts"
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy Script
+        env:
+          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
+          EC2_USER: ${{ env.EC2_USER }}
+          EC2_HOST: ${{ env.EC2_HOST }}
+        run: |
+          set -e
+          echo "Deploying module $MODULE_NAME, versione $VERSION to $EC2_HOST (PRO)"
+
+          if [ "$MODULE_NAME" = "distro" ]; then
+             echo "[Deploy PRO] Modulo distro: scarico gli artifact da S3 e li carico su EC2..."
+             LOCAL_TARGET_PATH="/tmp/${MODULE_NAME}-${VERSION}/"
+             S3_SOURCE_PATH="s3://${S3_BUCKET_NAME}/${MODULE_NAME}/${VERSION}/"
+             REMOTE_APP_PATH="/app/${MODULE_NAME}"
+             REMOTE_ARTIFACT_PATH="${REMOTE_APP_PATH}/artifacts"
+
+             mkdir -p "${LOCAL_TARGET_PATH}"
+
+             echo "[Deploy PRO] Tentativo di download da: ${S3_SOURCE_PATH} a ${LOCAL_TARGET_PATH}"
+             aws s3 cp "${S3_SOURCE_PATH}" "${LOCAL_TARGET_PATH}" --recursive
+             if [ $? -ne 0 ]; then echo "[Deploy PRO] ERRORE: Download da S3 fallito."; exit 1; fi
+
+             echo "[Deploy PRO] Download da S3 completato."
+             ls -lR "${LOCAL_TARGET_PATH}"
+             if [ -z "$(ls -A ${LOCAL_TARGET_PATH})" ]; then echo "[Deploy PRO] ERRORE: La directory ${LOCAL_TARGET_PATH} e' vuota."; exit 1; fi
+
+             echo "[Deploy PRO] Eseguo comandi remoti su ${EC2_USER}@${EC2_HOST}..."
+             ssh ${EC2_USER}@${EC2_HOST} "
+               set -e
+               echo '[Deploy PRO Remote] Pulisco i vecchi artifact...'
+               sudo rm -rf ${REMOTE_ARTIFACT_PATH}/*
+               sudo mkdir -p ${REMOTE_ARTIFACT_PATH}
+               sudo chown -R ${EC2_USER}:${EC2_USER} ${REMOTE_APP_PATH}
+             "
+             scp -r ${LOCAL_TARGET_PATH}* ${EC2_USER}@${EC2_HOST}:${REMOTE_ARTIFACT_PATH}/
+
+             ssh ${EC2_USER}@${EC2_HOST} "
+               set -e
+               cd ${REMOTE_ARTIFACT_PATH}
+               ZIP_FILE=\"${MODULE_NAME}-${VERSION}.zip\"
+               if ls \$ZIP_FILE >/dev/null 2>&1; then
+                 echo '[Deploy PRO Remote] ZIP trovato. Estraggo...'
+                 sudo apt-get update > /dev/null && sudo apt-get install -y unzip > /dev/null || echo 'unzip gia installato'
+                 unzip -o \$ZIP_FILE
+                 if [ \$? -ne 0 ]; then
+                   echo '[Deploy PRO Remote] ERRORE: unzip fallito.'
+                   exit 1
+                 fi
+                 mv \$ZIP_FILE ${MODULE_NAME}-last.zip
+               else
+                 echo '[Deploy PRO Remote] ERRORE: File ZIP non trovato.'; ls -la ${REMOTE_ARTIFACT_PATH}; exit 1;
+               fi
+               echo 'distro-last' | sudo tee ${REMOTE_APP_PATH}/current-version.txt > /dev/null
+             "
+             echo "[Deploy PRO] Deploy per distro completato."
+
+          else
+             echo "[Deploy PRO] Modulo $MODULE_NAME (non-distro): uso deploy_module.sh."
+             REMOTE_APP_PATH="/app/${MODULE_NAME}"
+             REMOTE_DISTRO_SCRIPT_PATH="${{ needs.setup_environment.outputs.deploy_script_path }}"
+
+             ssh ${EC2_USER}@${EC2_HOST} "
+               set -e
+               sudo mkdir -p ${REMOTE_APP_PATH}
+               sudo chown -R ${EC2_USER}:${EC2_USER} ${REMOTE_APP_PATH}
+
+               if [ -f ${REMOTE_DISTRO_SCRIPT_PATH} ]; then
+                 sudo chmod +x ${REMOTE_DISTRO_SCRIPT_PATH}
+                 ${REMOTE_DISTRO_SCRIPT_PATH} ${MODULE_NAME} ${VERSION}
+               else
+                 echo '[Deploy PRO Remote] ERRORE: deploy_module.sh non trovato in ${REMOTE_DISTRO_SCRIPT_PATH}'; exit 1;
+               fi
+             "
+             echo "[Deploy PRO] Deploy per $MODULE_NAME completato."
+          fi
+          echo "Deployment PRO completato per $MODULE_NAME."
+
+      - name: Cleanup SSH Key File
+        if: always()
+        run: rm -f "${{ steps.fetch-secrets.outputs.SSH_KEY_PATH }}"
+
+  slack_notification:
+    name: Send Slack Notification
+    runs-on: ubuntu-latest
+    needs: [extract_module_info, build, test, upload_to_s3, tag_latest, deploy_sit, deploy_pro, build_docker, setup_environment]
+    if: always()
+    env:
+      MODULE_NAME: ${{ needs.extract_module_info.outputs.module_name }}
+      VERSION: ${{ needs.extract_module_info.outputs.version }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.setup_environment.outputs.iam_role }}
+          aws-region: ${{ needs.setup_environment.outputs.aws_region }}
 
       - name: Fetch Slack Webhook URL from Parameter Store
         id: get-slack-webhook
         run: |
-          SLACK_WEBHOOK=$(aws ssm get-parameter --name "${{ env.SSM_SLACK_WEBHOOK_PARAM }}" --with-decryption --query Parameter.Value --output text)
-          if [[ -z "$SLACK_WEBHOOK" ]]; then 
+          SSM_PARAM="${{ needs.setup_environment.outputs.ssm_slack_webhook_param }}"
+          SLACK_WEBHOOK=$(aws ssm get-parameter --name "$SSM_PARAM" --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+          if [[ -z "$SLACK_WEBHOOK" ]]; then
             echo "AVVISO: Webhook Slack non configurato in Parameter Store"
             echo "SLACK_WEBHOOK_CONFIGURED=false" >> $GITHUB_OUTPUT
           else
@@ -687,41 +884,43 @@ jobs:
         id: slack-message
         if: steps.get-slack-webhook.outputs.SLACK_WEBHOOK_CONFIGURED == 'true'
         run: |
-          # Recupera risultati dai job tramite needs
           BUILD_RESULT="${{ needs.build.result }}"
           TEST_RESULT="${{ needs.test.result }}"
           UPLOAD_RESULT="${{ needs.upload_to_s3.result }}"
           TAG_RESULT="${{ needs.tag_latest.result }}"
-          DEPLOY_RESULT="${{ needs.deploy_sit.result }}"
+          DEPLOY_SIT_RESULT="${{ needs.deploy_sit.result }}"
+          DEPLOY_PRO_RESULT="${{ needs.deploy_pro.result }}"
           DOCKER_RESULT="${{ needs.build_docker.result }}"
-          
-          # Determina lo stato complessivo
+          ENV_NAME="${{ needs.setup_environment.outputs.environment_name }}"
+
           FAILED_JOBS=""
           CANCELLED_JOBS=""
-          
-          # Controlla job essenziali (sempre eseguiti)
+
           if [[ "$BUILD_RESULT" == "failure" ]] || [[ "$TEST_RESULT" == "failure" ]]; then
             FAILED_JOBS="true"
           fi
-          
-          # Controlla job condizionali solo su main
-          # "skipped" è accettabile (condizione if: non soddisfatta)
-          # "failure" deve essere rilevato
+
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            if [[ "$UPLOAD_RESULT" == "failure" ]] || [[ "$TAG_RESULT" == "failure" ]] || [[ "$DEPLOY_RESULT" == "failure" ]] || [[ "$DOCKER_RESULT" == "failure" ]]; then
+            if [[ "$UPLOAD_RESULT" == "failure" ]] || [[ "$TAG_RESULT" == "failure" ]] || [[ "$DEPLOY_SIT_RESULT" == "failure" ]] || [[ "$DOCKER_RESULT" == "failure" ]]; then
               FAILED_JOBS="true"
             fi
-            if [[ "$UPLOAD_RESULT" == "cancelled" ]] || [[ "$TAG_RESULT" == "cancelled" ]] || [[ "$DEPLOY_RESULT" == "cancelled" ]] || [[ "$DOCKER_RESULT" == "cancelled" ]]; then
-              CANCELLED_JOBS="true"
+            DEPLOY_STATUS="Deploy SIT: $DEPLOY_SIT_RESULT"
+            ENV_INFO="Ambiente: SIT"
+          elif [[ "${{ github.ref_name }}" == "pro" ]]; then
+            if [[ "$UPLOAD_RESULT" == "failure" ]] || [[ "$TAG_RESULT" == "failure" ]] || [[ "$DEPLOY_PRO_RESULT" == "failure" ]] || [[ "$DOCKER_RESULT" == "failure" ]]; then
+              FAILED_JOBS="true"
             fi
+            DEPLOY_STATUS="Deploy PRO: $DEPLOY_PRO_RESULT"
+            ENV_INFO="Ambiente: PRODUZIONE (PRO)"
+          else
+            DEPLOY_STATUS="Deploy: non applicabile (branch: ${{ github.ref_name }})"
+            ENV_INFO="Ambiente: Sviluppo (branch: ${{ github.ref_name }})"
           fi
-          
-          # Controlla cancellazioni per job essenziali
+
           if [[ "$BUILD_RESULT" == "cancelled" ]] || [[ "$TEST_RESULT" == "cancelled" ]]; then
             CANCELLED_JOBS="true"
           fi
-          
-          # Imposta stato finale
+
           if [[ "$FAILED_JOBS" == "true" ]]; then
             echo "status=:x: Fallito" >> $GITHUB_OUTPUT
             echo "color=danger" >> $GITHUB_OUTPUT
@@ -732,22 +931,13 @@ jobs:
             echo "status=:white_check_mark: Successo" >> $GITHUB_OUTPUT
             echo "color=good" >> $GITHUB_OUTPUT
           fi
-          
-          # Prepara messaggi di stato per ogni job
+
           echo "build_status=Build: $BUILD_RESULT" >> $GITHUB_OUTPUT
           echo "test_status=Test: $TEST_RESULT" >> $GITHUB_OUTPUT
-          
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "deploy_status=Deploy SIT: $DEPLOY_RESULT" >> $GITHUB_OUTPUT
-            echo "docker_status=Docker Build: $DOCKER_RESULT" >> $GITHUB_OUTPUT
-            echo "upload_status=Upload S3: $UPLOAD_RESULT" >> $GITHUB_OUTPUT
-            echo "environment_info=Ambiente: Produzione (SIT)" >> $GITHUB_OUTPUT
-          else
-            echo "deploy_status=Deploy SIT: non applicabile (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
-            echo "docker_status=Docker Build: non applicabile (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
-            echo "upload_status=Upload S3: non applicabile (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
-            echo "environment_info=Ambiente: Sviluppo (branch: ${{ github.ref_name }})" >> $GITHUB_OUTPUT
-          fi
+          echo "deploy_status=$DEPLOY_STATUS" >> $GITHUB_OUTPUT
+          echo "docker_status=Docker Build: $DOCKER_RESULT" >> $GITHUB_OUTPUT
+          echo "upload_status=Upload S3: $UPLOAD_RESULT" >> $GITHUB_OUTPUT
+          echo "environment_info=$ENV_INFO" >> $GITHUB_OUTPUT
 
       - name: Send Slack Notification
         if: steps.get-slack-webhook.outputs.SLACK_WEBHOOK_CONFIGURED == 'true'
@@ -819,24 +1009,19 @@ jobs:
     name: Cleanup Old Artifacts
     runs-on: ubuntu-latest
     needs: [slack_notification]
-    if: always() # Esegui sempre, anche se i job precedenti falliscono
+    if: always()
     permissions:
-      actions: write # Necessario per eliminare gli artifact
-    # Questo job automatizza la rimozione degli artifact più vecchi di un certo numero di giorni
-    # La soglia di età può essere configurata tramite il parametro 'artifact-retention-days'
+      actions: write
     steps:
       - name: Cleanup Old Artifacts
         run: |
-          echo "=== Inizia la pulizia degli artifact più vecchi ==="
+          echo "=== Inizia la pulizia degli artifact piu' vecchi ==="
 
-          # Imposta la soglia di età in giorni (gli artifact più vecchi di questa soglia verranno eliminati)
           DAYS_OLD=${{ inputs.artifact-retention-days }}
-          echo "Soglia di età impostata a $DAYS_OLD giorni"
+          echo "Soglia di eta' impostata a $DAYS_OLD giorni"
 
-          # Usa il GITHUB_TOKEN con gli scope del job Actions
           TOKEN="${{ secrets.GITHUB_TOKEN }}"
 
-          # Ottieni l'ID del repository (opzionale, utile per debug)
           REPO_INFO=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}")
           REPO_ID=$(echo "$REPO_INFO" | jq -r '.id // empty')
@@ -844,7 +1029,6 @@ jobs:
           echo "Repository ID: ${REPO_ID:-sconosciuto}"
           echo "Repository: ${{ github.repository }}"
 
-          # Calcola la data limite (oggi - DAYS_OLD)
           CURRENT_DATE=$(date +%s)
           SECONDS_IN_DAY=86400
           CUTOFF_DATE=$((CURRENT_DATE - (DAYS_OLD * SECONDS_IN_DAY)))
@@ -855,7 +1039,6 @@ jobs:
           ARTIFACTS=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=100")
 
-          # Se manca .artifacts, stampa il messaggio d'errore e continua senza crash
           if ! echo "$ARTIFACTS" | jq -e '.artifacts' >/dev/null 2>&1; then
             echo "[DEBUG_LOG] Risposta inattesa dall'API artifacts:" >&2
             echo "$ARTIFACTS" | jq -r '.message? // . | tostring' >&2
@@ -864,14 +1047,13 @@ jobs:
           TOTAL_ARTIFACTS=$(echo "$ARTIFACTS" | jq -r '.total_count // 0')
           echo "Totale artifact trovati: $TOTAL_ARTIFACTS"
 
-          echo "Identificazione degli artifact più vecchi della soglia..."
+          echo "Identificazione degli artifact piu' vecchi della soglia..."
           OLD_ARTIFACT_IDS=$(echo "$ARTIFACTS" | jq -r "(.artifacts // [])[] |
             select((.created_at | strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime) < $CUTOFF_DATE) |
             .id")
 
-          # Conta quanti artifact verranno eliminati
           COUNT=$(echo "$OLD_ARTIFACT_IDS" | grep -v '^$' | wc -l)
-          echo "Trovati $COUNT artifact più vecchi di $DAYS_OLD giorni da eliminare"
+          echo "Trovati $COUNT artifact piu' vecchi di $DAYS_OLD giorni da eliminare"
 
           if [ "$COUNT" -eq 0 ]; then
             echo "Nessun artifact da eliminare. Operazione completata."
@@ -889,10 +1071,10 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID")
 
             if [ "$HTTP_CODE" -eq 204 ] || [ "$HTTP_CODE" -eq 200 ]; then
-              echo "✓ Artifact $ARTIFACT_ID eliminato con successo (HTTP $HTTP_CODE)"
+              echo "Artifact $ARTIFACT_ID eliminato con successo (HTTP $HTTP_CODE)"
               SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
             else
-              echo "✗ Errore nell'eliminazione dell'artifact $ARTIFACT_ID (HTTP $HTTP_CODE)"
+              echo "Errore nell'eliminazione dell'artifact $ARTIFACT_ID (HTTP $HTTP_CODE)"
               FAIL_COUNT=$((FAIL_COUNT + 1))
             fi
           done

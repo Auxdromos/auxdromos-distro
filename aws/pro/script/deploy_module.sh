@@ -1,20 +1,21 @@
 #!/bin/bash
-# Script per deployare moduli applicativi AuxDromos tramite Docker Compose
+# Script per deployare moduli applicativi AuxDromos in ambiente PRO (Produzione)
 # Utilizza AWS Systems Manager Parameter Store per la configurazione e i segreti.
+# Region: eu-central-1 (Frankfurt)
 
 # Opzioni per uscire in caso di errore e gestire errori nelle pipe
 set -eo pipefail
 
 # Determine the absolute path of the script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Set BASE_DIR to three directories up from the script location (script -> sit -> aws -> artifacts)
+# Set BASE_DIR to three directories up from the script location (script -> pro -> aws -> artifacts)
 BASE_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-# Path for AWS SSM Parameter Store parameters
-GLOBAL_PARAM_PATH="/auxdromos/sit/global"
-SCRIPT_PARAM_PATH="/auxdromos/sit/script"
+# Path for AWS SSM Parameter Store parameters - PRO environment
+GLOBAL_PARAM_PATH="/auxdromos/pro/global"
+SCRIPT_PARAM_PATH="/auxdromos/pro/script"
 
-# --- NUOVA FUNZIONE: Recupera ed esporta parametri da AWS SSM ---
+# --- FUNZIONE: Recupera ed esporta parametri da AWS SSM ---
 # Richiede AWS CLI v2 e jq installati
 
 fetch_and_export_params() {
@@ -59,68 +60,50 @@ fetch_and_export_params() {
   echo "Recupero parametri da ${PARAM_PATH} completato."
   return 0
 }
-# --- FINE NUOVA FUNZIONE ---
-
-# --- Funzioni Helper (Opzionali, da adattare se le usi) ---
-# check_keycloak() { ... }
-# check_image_exists() { ... }
-# Assicurati che usino le variabili AWS_DEFAULT_REGION e AWS_ACCOUNT_ID dall'ambiente
-
-# --- Funzione deploy_keycloak (Opzionale, se preferisci gestirlo separatamente da compose) ---
-# Se decidi di usare questa funzione, adattala come nella risposta precedente
-# per recuperare i parametri da SSM e usare `docker run` con le variabili -e.
-# Altrimenti, se Keycloak è gestito solo da docker-compose.yml, puoi rimuovere questa funzione.
 
 # --- Funzione deploy_module (per moduli gestiti da docker-compose.yml) ---
 deploy_module() {
   local module_to_deploy="$1"
-  # Determina il percorso del file docker-compose.yml
-  local compose_file_path="$BASE_DIR/aws/sit/docker/docker-compose.yml"
+  # Determina il percorso del file docker-compose.yml - PRO environment
+  local compose_file_path="$BASE_DIR/aws/pro/docker/docker-compose.yml"
 
   echo ""
   echo "-----------------------------------------"
-  echo "Deploying $module_to_deploy..."
+  echo "Deploying $module_to_deploy (PRO)..."
   echo "-----------------------------------------"
 
-  # --- OTTIENI REGIONE AWS (Esempio: da metadati EC2) ---
-  # Questo viene fatto una sola volta all'inizio dello script ora
   if [[ -z "$AWS_DEFAULT_REGION" ]]; then
       echo "Errore critico: AWS_DEFAULT_REGION non definita."
       return 1
   fi
-  # --- FINE OTTIENI REGIONE ---
 
-  # --- RECUPERA PARAMETRI GLOBALI, SCRIPT E MODULO DA SSM ---
-  # I parametri globali e script sono già stati caricati da deploy_all o all'inizio
-  # Carichiamo solo quelli specifici del modulo
-  local MODULE_PARAM_PATH="/auxdromos/sit/${module_to_deploy}"
+  # --- RECUPERA PARAMETRI SPECIFICI DEL MODULO DA SSM ---
+  local MODULE_PARAM_PATH="/auxdromos/pro/${module_to_deploy}"
 
   echo "Recupero parametri specifici per il modulo ${module_to_deploy}..."
   if ! fetch_and_export_params "$MODULE_PARAM_PATH" "$AWS_DEFAULT_REGION"; then
       echo "Attenzione: Nessun parametro specifico trovato per il modulo ${module_to_deploy}."
-      echo "Procedo con i parametri globali e di script già caricati."
+      echo "Procedo con i parametri globali e di script gia' caricati."
   else
       echo "Parametri specifici per ${module_to_deploy} caricati con successo."
   fi
-  # --- FINE RECUPERO PARAMETRI MODULO ---
 
-  # Verifica variabili AWS essenziali (già caricate)
+  # Verifica variabili AWS essenziali (gia' caricate)
   if [[ -z "$AWS_ACCOUNT_ID" ]]; then
     echo "Errore: AWS_ACCOUNT_ID non trovato nell'ambiente."
     return 1
   fi
-  # Verifica altre variabili globali/script necessarie qui, se serve
 
   # --- TROVA L'ULTIMO TAG DA ECR ---
-  AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-  ENV_NAME="${ENV_NAME:-sit}"
+  AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-eu-central-1}"
+  ENV_NAME="${ENV_NAME:-pro}"
   AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
   FULL_REPO_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
   REPO_NAME="auxdromos-${module_to_deploy}"
 
   echo "Recupero tag (semver) per ${REPO_NAME}..."
 
-  # Prendi TUTTI i tag (solo TAGGED), sanifica, filtra semver, scegli il più alto
+  # Prendi TUTTI i tag (solo TAGGED), sanifica, filtra semver, scegli il piu' alto
   TAGS_RAW=$(aws ecr describe-images \
     --repository-name "${REPO_NAME}" \
     --region "${AWS_DEFAULT_REGION}" \
@@ -162,7 +145,6 @@ deploy_module() {
   echo "Login ECR..."
   aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
     | docker login --username AWS --password-stdin "${FULL_REPO_BASE}"
-  # --- FINE LOGICA ECR ---
 
   # Vai alla directory del docker-compose
   local compose_dir=$(dirname "${compose_file_path}")
@@ -176,17 +158,17 @@ deploy_module() {
   echo "Spazio disco disponibile:"
   df -h / | grep -v Filesystem
 
-  # Avvisa se lo spazio è limitato (meno di 2GB)
+  # Avvisa se lo spazio e' limitato (meno di 2GB)
   AVAILABLE_SPACE=$(df / | tail -1 | awk '{print $4}')
   if [ "$AVAILABLE_SPACE" -lt 2097152 ]; then  # 2GB in KB
-    echo "⚠️ ATTENZIONE: Spazio disco limitato (meno di 2GB disponibili)"
+    echo "ATTENZIONE: Spazio disco limitato (meno di 2GB disponibili)"
   fi
 
   # Stop e rimuovi il container se esiste
-  CONTAINER_NAME="auxdromos-${module_to_deploy}"  # rimuovi 'local' se non in funzione
+  CONTAINER_NAME="auxdromos-${module_to_deploy}"
   echo "Stop e rimozione container esistente ${CONTAINER_NAME}..."
   cd / || exit 1
-  cd "/app/distro/artifacts/aws/${ENV_NAME:-sit}/docker" || exit 1
+  cd "/app/distro/artifacts/aws/${ENV_NAME:-pro}/docker" || exit 1
   test -f "${compose_file_path}" || { echo "Compose non trovato: ${compose_file_path}"; exit 1; }
 
   # Pulizia risorse Docker prima del deploy
@@ -195,40 +177,36 @@ deploy_module() {
   docker network prune -f 2>/dev/null || echo "Info: Errore durante il prune delle reti."
   docker image prune -f 2>/dev/null || echo "Info: Errore durante il prune delle immagini dangling."
 
-  # Pulizia aggiuntiva per il modulo rdbms per liberare più spazio
+  # Pulizia aggiuntiva per il modulo rdbms per liberare piu' spazio
   if [[ "$module_to_deploy" == "rdbms" ]]; then
     echo "Pulizia aggiuntiva per modulo rdbms..."
     docker volume prune -f 2>/dev/null || echo "Info: Errore durante il prune dei volumi."
     docker system prune -f --volumes 2>/dev/null || echo "Info: Errore durante il system prune."
   fi
 
-  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" stop "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non in esecuzione o già fermato."
+  docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" stop "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non in esecuzione o gia' fermato."
   docker-compose -p "${PROJECT_NAME}" --file "${compose_file_path}" rm -f "${module_to_deploy}" >/dev/null 2>&1 || echo "Info: Container ${module_to_deploy} non trovato per la rimozione."
   # Rimuovi l'immagine vecchia localmente (solo se abbiamo trovato un tag ECR)
   if [[ "$LATEST_TAG" != "N/A" ]]; then
       echo "Rimozione immagine locale precedente (se esiste) per forzare il pull..."
-      docker image rm ${IMAGE_NAME_WITH_TAG} >/dev/null 2>&1 || echo "Info: Immagine locale ${IMAGE_NAME_WITH_TAG} non trovata o già rimossa."
+      docker image rm ${IMAGE_NAME_WITH_TAG} >/dev/null 2>&1 || echo "Info: Immagine locale ${IMAGE_NAME_WITH_TAG} non trovata o gia' rimossa."
       # Rimuovi anche il tag :latest se presente
       docker image rm ${FULL_REPO_BASE}/${REPO_NAME}:latest >/dev/null 2>&1 || true
   fi
 
-  # Ricrea la rete se è stata rimossa dal prune
+  # Ricrea la rete se e' stata rimossa dal prune
   docker network create auxdromos-network >/dev/null 2>&1 || true
 
   echo "Avvio container ${CONTAINER_NAME} con docker-compose..."
-  # --- COMANDO DOCKER-COMPOSE MODIFICATO: SENZA --env-file ---
-  # Usa le variabili esportate da fetch_and_export_params e quelle del tag
   if ! docker-compose -p "${PROJECT_NAME}" \
                  --file "${compose_file_path}" \
                  -f "docker-compose.override.yml" \
                  up -d $module_to_deploy; then
       echo "Errore durante l'esecuzione di 'docker-compose up' per ${module_to_deploy}."
-      # Mostra log in caso di fallimento dell'up
       echo "Ultime righe di log del tentativo di avvio:"
       docker logs --tail 50 ${CONTAINER_NAME} 2>/dev/null || echo "Nessun log disponibile per ${CONTAINER_NAME}"
       return 1
   fi
-  # --- FINE COMANDO ---
 
   echo "Verifica avvio container ${CONTAINER_NAME}..."
   sleep 5 # Breve attesa per dare tempo al container di apparire
@@ -237,7 +215,7 @@ deploy_module() {
       local TIMEOUT=60
       if [[ "$module_to_deploy" == "rdbms" ]]; then
           TIMEOUT=450  # 7.5 minuti per rdbms/liquibase (aumentato)
-          echo "ℹ️ Timeout esteso per modulo rdbms: ${TIMEOUT}s (Liquibase richiede più tempo)"
+          echo "Timeout esteso per modulo rdbms: ${TIMEOUT}s (Liquibase richiede piu' tempo)"
       fi
 
       local START_TIME=$(date +%s)
@@ -273,25 +251,25 @@ deploy_module() {
       while [ $(($(date +%s) - START_TIME)) -lt $TIMEOUT ]; do
           local container_logs=$(docker logs ${CONTAINER_NAME} 2>&1)
 
-          # Per rdbms, controlla se il container si è fermato (normale dopo migration)
+          # Per rdbms, controlla se il container si e' fermato (normale dopo migration)
           if [[ "$module_to_deploy" == "rdbms" ]]; then
               if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-                  echo "Container ${CONTAINER_NAME} non più in esecuzione. Verifico log per esito migration..."
+                  echo "Container ${CONTAINER_NAME} non piu' in esecuzione. Verifico log per esito migration..."
                   local exit_logs=$(docker logs ${CONTAINER_NAME} 2>&1)
                   for pattern in "${success_patterns[@]}"; do
                       if echo "$exit_logs" | grep -q "$pattern"; then
                           INITIALIZED=true
-                          echo "✅ Modulo rdbms: migration completata con successo (container si è fermato normalmente). Pattern: $pattern"
+                          echo "Modulo rdbms: migration completata con successo (container si e' fermato normalmente). Pattern: $pattern"
                           break 2
                       fi
                   done
-                  # Se anche Stopping service Tomcat è nei log senza errori fatali, è OK
+                  # Se anche Stopping service Tomcat e' nei log senza errori fatali, e' OK
                   if echo "$exit_logs" | grep -q "Stopping service" && ! echo "$exit_logs" | grep -q -E "(SEVERE|FATAL|OutOfMemoryError)"; then
                       INITIALIZED=true
-                      echo "✅ Modulo rdbms: container si è fermato normalmente dopo esecuzione"
+                      echo "Modulo rdbms: container si e' fermato normalmente dopo esecuzione"
                       break
                   fi
-                  echo "❌ Container ${CONTAINER_NAME} si è fermato senza completare le migration"
+                  echo "Container ${CONTAINER_NAME} si e' fermato senza completare le migration"
                   break
               fi
           fi
@@ -300,7 +278,7 @@ deploy_module() {
           for pattern in "${success_patterns[@]}"; do
               if echo "$container_logs" | grep -q "$pattern"; then
                   INITIALIZED=true
-                  echo "✅ Modulo ${module_to_deploy} inizializzato correttamente! (Pattern: $pattern)"
+                  echo "Modulo ${module_to_deploy} inizializzato correttamente! (Pattern: $pattern)"
                   break 2  # Esce da entrambi i loop
               fi
           done
@@ -308,39 +286,39 @@ deploy_module() {
           # Per rdbms, controlla anche che non ci siano errori fatali
           if [[ "$module_to_deploy" == "rdbms" ]]; then
               if echo "$container_logs" | grep -q -E "(SEVERE|FATAL|Connection refused|Database.*not available|Lock could not be acquired|OutOfMemoryError)"; then
-                  echo "❌ Errore fatale rilevato nei log di ${module_to_deploy}"
+                  echo "Errore fatale rilevato nei log di ${module_to_deploy}"
                   echo "Ultimi log per debug:"
                   echo "$container_logs" | tail -20
                   break
               fi
 
-              # Mostra progresso più dettagliato per rdbms
+              # Mostra progresso piu' dettagliato per rdbms
               local current_log_snippet=$(echo "$container_logs" | tail -5 | tr '\n' ' ')
               if [[ "$current_log_snippet" != "$LAST_LOG_CHECK" ]]; then
                   if echo "$container_logs" | grep -q -E "(Running Changeset|Liquibase.*update|Processing.*changeset|Migrating schema|Creating table)"; then
-                      echo "🔄 Liquibase in esecuzione... ($(( $(date +%s) - START_TIME ))s)"
+                      echo "Liquibase in esecuzione... ($(( $(date +%s) - START_TIME ))s)"
                   fi
                   LAST_LOG_CHECK="$current_log_snippet"
               else
-                  echo -n "." # Indica che il processo è ancora attivo
+                  echo -n "." # Indica che il processo e' ancora attivo
               fi
           else
               echo -n "." # Mostra un indicatore di progresso standard
           fi
 
-          sleep 5  # Intervallo più lungo per ridurre il carico e dare più tempo al processo
+          sleep 5  # Intervallo piu' lungo per ridurre il carico e dare piu' tempo al processo
       done
       # Mostra i log indipendentemente dall'esito dell'inizializzazione
       echo "=== Prime righe di log del servizio ${module_to_deploy} ==="
       docker logs --tail 20 ${CONTAINER_NAME}
       echo "=========================================="
 
-      # Verifica se l'inizializzazione è avvenuta con successo
+      # Verifica se l'inizializzazione e' avvenuta con successo
       if [ "$INITIALIZED" = true ]; then
           echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) completato con successo $(date) ==="
           return 0
       else
-          echo "Errore: Il modulo ${module_to_deploy} non si è inizializzato correttamente entro ${TIMEOUT} secondi."
+          echo "Errore: Il modulo ${module_to_deploy} non si e' inizializzato correttamente entro ${TIMEOUT} secondi."
           echo "=== Deploy di $module_to_deploy (tag: ${LATEST_TAG:-N/A}) fallito $(date) ==="
           return 1
       fi
@@ -355,7 +333,7 @@ deploy_module() {
 
 # --- Funzione deploy_all ---
 deploy_all() {
-  # I parametri globali e script sono già stati caricati all'inizio
+  # I parametri globali e script sono gia' stati caricati all'inizio
   if [[ -z "$MODULE_ORDER" ]]; then
       echo "Errore: MODULE_ORDER non definito nell'ambiente. Impossibile procedere con 'all'."
       exit 1
@@ -371,7 +349,7 @@ deploy_all() {
     if deploy_module "$module"; then
         deployed_modules+=("$module")
     else
-        echo "❌ Deploy del modulo $module fallito."
+        echo "Deploy del modulo $module fallito."
         failed_modules+=("$module")
         deploy_failed=1
         # break # Decommenta per interrompere al primo fallimento
@@ -388,18 +366,18 @@ deploy_all() {
   done
 
   echo ""
-  echo "--- Riepilogo Deploy 'all' ---"
+  echo "--- Riepilogo Deploy PRO 'all' ---"
   if [ ${#deployed_modules[@]} -gt 0 ]; then
-      echo "✅ Moduli deployati con successo: ${deployed_modules[*]}"
+      echo "Moduli deployati con successo: ${deployed_modules[*]}"
   fi
   if [ ${#failed_modules[@]} -gt 0 ]; then
-      echo "oduli falliti: ${failed_modules[*]}"
+      echo "Moduli falliti: ${failed_modules[*]}"
   fi
   echo "-----------------------------"
 
   if [ $deploy_failed -eq 1 ]; then
-      echo "⚠️ Uno o più moduli non sono stati deployati correttamente."
-      exit 1 # Esce con errore se almeno un modulo è fallito
+      echo "Uno o piu' moduli non sono stati deployati correttamente."
+      exit 1 # Esce con errore se almeno un modulo e' fallito
   fi
 }
 
@@ -407,46 +385,45 @@ deploy_all() {
 
 # Assicura che la rete Docker esista
 echo "Assicurazione esistenza rete Docker auxdromos-network..."
-docker network create auxdromos-network >/dev/null 2>&1 || echo "Info: Rete auxdromos-network già esistente o errore nella creazione ignorato."
+docker network create auxdromos-network >/dev/null 2>&1 || echo "Info: Rete auxdromos-network gia' esistente o errore nella creazione ignorato."
 
 # Recupera il nome del modulo passato come primo argomento
 MODULO_ARG=$1
 
 if [[ -z "$MODULO_ARG" ]]; then
   echo "Errore: nessun modulo specificato. Specificare un modulo o 'all' per deployare tutto."
-  # Potremmo leggere MODULES da SSM qui, ma per ora lo lasciamo hardcoded nell'errore
   echo "Esempio Moduli: config rdbms idp backend gateway print-service admin-dashboard"
   exit 1
 fi
 
-echo "=== Inizio deploy di '$MODULO_ARG' $(date) ==="
+echo "=== Inizio deploy PRO di '$MODULO_ARG' $(date) ==="
 
 # --- CARICA PARAMETRI GLOBALI E SCRIPT UNA SOLA VOLTA ALL'INIZIO ---
 echo "Recupero configurazione iniziale da AWS Systems Manager Parameter Store..."
-# 1. Determina Regione - Logica migliorata per funzionare sia in locale che su EC2
+# 1. Determina Regione
 echo "Determinazione della regione AWS..."
 
-# Verifica se AWS_DEFAULT_REGION è già impostata nell'ambiente
+# Verifica se AWS_DEFAULT_REGION e' gia' impostata nell'ambiente
 if [[ -n "${AWS_DEFAULT_REGION}" ]]; then
     echo "Utilizzando la regione AWS dall'ambiente: ${AWS_DEFAULT_REGION}"
 else
-    # Se non è impostata, prova a determinarla dai metadati EC2
+    # Se non e' impostata, prova a determinarla dai metadati EC2
     echo "AWS_DEFAULT_REGION non impostata. Tentativo di rilevare la regione dai metadati EC2..."
 
     # Usa un timeout ridotto per evitare attese lunghe in ambiente locale
     EC2_REGION=$(curl -s --connect-timeout 1 --max-time 1 http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region 2>/dev/null)
 
-    # Verifica se la regione è stata recuperata con successo
+    # Verifica se la regione e' stata recuperata con successo
     if [[ -n "$EC2_REGION" && "$EC2_REGION" != "null" ]]; then
         echo "Regione rilevata dai metadati EC2: ${EC2_REGION}"
         AWS_DEFAULT_REGION="$EC2_REGION"
     else
         echo "Attenzione: Impossibile determinare la regione dai metadati EC2."
-        echo "Impostazione della regione predefinita a us-east-1."
+        echo "Impostazione della regione predefinita a eu-central-1."
         echo "Per utilizzare una regione diversa, impostare la variabile d'ambiente AWS_DEFAULT_REGION."
 
-        # Imposta us-east-1 come default
-        AWS_DEFAULT_REGION="us-east-1"
+        # Imposta eu-central-1 come default per PRO
+        AWS_DEFAULT_REGION="eu-central-1"
     fi
 fi
 
@@ -465,17 +442,17 @@ echo "Parametri globali caricati con successo."
 # 3. Carica Parametri Script
 echo "Caricamento parametri di script da ${SCRIPT_PARAM_PATH}..."
 if ! fetch_and_export_params "$SCRIPT_PARAM_PATH" "$AWS_DEFAULT_REGION"; then
-    echo "Attenzione: Errore nel recupero dei parametri dello script da ${SCRIPT_PARAM_PATH}. Alcune funzionalità potrebbero usare valori di default."
+    echo "Attenzione: Errore nel recupero dei parametri dello script da ${SCRIPT_PARAM_PATH}. Alcune funzionalita' potrebbero usare valori di default."
     # Imposta default essenziali se SSM fallisce e stiamo facendo 'all'
     if [[ "$MODULO_ARG" == "all" && -z "$MODULE_ORDER" ]]; then
-        echo "Imposto MODULE_ORDER di default: config rdbms keycloak idp backend pagodesk-service gateway"
-        export MODULE_ORDER="config rdbms idp backend pagodesk-service print-service gateway admin-dashboard"
+        echo "Imposto MODULE_ORDER di default: config rdbms idp backend gateway print-service admin-dashboard"
+        export MODULE_ORDER="config rdbms idp backend gateway print-service admin-dashboard"
     fi
 else
-    # Se MODULE_ORDER non è stato caricato nemmeno con successo, imposta default
+    # Se MODULE_ORDER non e' stato caricato nemmeno con successo, imposta default
      if [[ "$MODULO_ARG" == "all" && -z "$MODULE_ORDER" ]]; then
         echo "Attenzione: MODULE_ORDER vuoto dopo recupero da SSM. Imposto default."
-        export MODULE_ORDER="config rdbms idp backend pagodesk-service print-service gateway admin-dashboard"
+        export MODULE_ORDER="config rdbms idp backend gateway print-service admin-dashboard"
     fi
 fi
 echo "Configurazione iniziale caricata."
@@ -496,10 +473,10 @@ exit_status=$?
 echo ""
 echo "========================================="
 if [ $exit_status -eq 0 ]; then
-  echo "=== Deploy di '$MODULO_ARG' completato con successo $(date) ==="
+  echo "=== Deploy PRO di '$MODULO_ARG' completato con successo $(date) ==="
 else
-  echo "=== Deploy di '$MODULO_ARG' terminato con errori $(date) ==="
+  echo "=== Deploy PRO di '$MODULO_ARG' terminato con errori $(date) ==="
 fi
 echo "========================================="
 
-exit $exit_status # Esce con lo stato dell'ultima operazione
+exit $exit_status
