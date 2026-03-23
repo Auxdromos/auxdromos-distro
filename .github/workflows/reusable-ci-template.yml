@@ -649,7 +649,7 @@ jobs:
                ZIP_FILE=\"${MODULE_NAME}-${VERSION}.zip\"
                if ls \$ZIP_FILE >/dev/null 2>&1; then
                  echo '[Deploy Remote] ZIP trovato. Estraggo...'
-                 sudo apt-get update > /dev/null && sudo apt-get install -y unzip > /dev/null || echo 'unzip gia' installato o errore installazione'
+                 sudo apt-get update > /dev/null && sudo apt-get install -y unzip > /dev/null || echo 'unzip already installed or install error'
                  unzip -o \$ZIP_FILE
                  if [ \$? -ne 0 ]; then
                    echo '[Deploy Remote] ERRORE: unzip fallito.'
