@@ -1,0 +1,212 @@
+version: '3.8'
+
+# Docker Compose file for AuxDromos PRO (Production) environment
+# Uses environment variables from AWS Systems Manager Parameter Store
+# Region: eu-central-1 (Frankfurt)
+
+services:
+  config:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-config:${CONFIG_IMAGE_TAG:-latest}
+    container_name: auxdromos-config
+    ports:
+      - "${EXTERNAL_PORT:-8888}:${INTERNAL_PORT:-8888}"
+    environment:
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=${SPRING_CLOUD_CONFIG_SERVER_GIT_URI}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=${SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=${SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL=${SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS=${SPRING_CLOUD_CONFIG_SERVER_GIT_SEARCH_PATHS}
+      - SPRING_CLOUD_BUS_ENABLED=false
+      - MANAGEMENT_ENDPOINT_HEALTH_ENABLED=true
+      - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health
+      - JAVA_TOOL_OPTIONS=-XX:ReservedCodeCacheSize=64M -Xss512K -XX:MaxMetaspaceSize=128M -Xmx512m -XX:MaxDirectMemorySize=32M -XX:MaxRAMPercentage=75.0
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-pro}
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  rdbms:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-rdbms:${RDBMS_IMAGE_TAG:-latest}
+    container_name: auxdromos-rdbms
+    ports:
+      - "${EXTERNAL_PORT:-8089}:${INTERNAL_PORT:-8089}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "${PROFILE:-pro}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-pro}"
+      SPRING_APPLICATION_NAME: "rdbms"
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0"
+      DB_URL: "${DB_URL}"
+      DB_USERNAME: "${DB_USERNAME}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: no
+    networks:
+      - auxdromos-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  idp:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-idp:${IDP_IMAGE_TAG:-latest}
+    container_name: auxdromos-idp
+    ports:
+      - "${EXTERNAL_PORT:-8081}:${INTERNAL_PORT:-8081}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "${PROFILE:-pro}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-pro}"
+      SPRING_APPLICATION_NAME: "idp"
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  backend:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-backend:${BACKEND_IMAGE_TAG:-latest}
+    container_name: auxdromos-backend
+    ports:
+      - "${EXTERNAL_PORT:-8083}:${INTERNAL_PORT:-8083}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "${PROFILE:-pro}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-pro}"
+      SPRING_APPLICATION_NAME: "backend"
+      JAVA_TOOL_OPTIONS: "-Xmx1536m -XX:MaxRAMPercentage=75.0"
+      DB_URL: "${DB_URL}"
+      DB_USERNAME: "${DB_USERNAME}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+      PAGOPA_RECEIPTS_SUBSCRIPTION_KEY: "${PAGOPA_RECEIPTS_SUBSCRIPTION_KEY}"
+      PAGOPA_GDP_SUBSCRIPTION_KEY: "${PAGOPA_GDP_SUBSCRIPTION_KEY}"
+      PAGOPA_PRINT_SUBSCRIPTION_KEY: "${PAGOPA_PRINT_SUBSCRIPTION_KEY}"
+      PAGOPA_FDR_SUBSCRIPTION_KEY: "${PAGOPA_FDR_SUBSCRIPTION_KEY}"
+      PAGOPA_HMAC_SECRET: "${PAGOPA_HMAC_SECRET}"
+      PAGOPA_RECEIPT_HMAC_SECRET_KEY: "${PAGOPA_RECEIPT_HMAC_SECRET_KEY}"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  gateway:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-gateway:${GATEWAY_IMAGE_TAG:-latest}
+    container_name: auxdromos-gateway
+    ports:
+      - "${EXTERNAL_PORT:-8080}:${INTERNAL_PORT:-8080}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "${PROFILE:-pro}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-pro}"
+      SPRING_APPLICATION_NAME: "gateway"
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  print-service:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-print-service:${PRINT_SERVICE_IMAGE_TAG:-latest}
+    container_name: auxdromos-print-service
+    ports:
+      - "${EXTERNAL_PORT:-8085}:${INTERNAL_PORT:-8085}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "${PROFILE:-pro}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-pro}"
+      SPRING_APPLICATION_NAME: "print-service"
+      JAVA_TOOL_OPTIONS: "-Xmx1536m -XX:MaxRAMPercentage=75.0"
+      DB_URL: "${DB_URL}"
+      DB_USERNAME: "${DB_USERNAME}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  admin-dashboard:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/auxdromos-admin-dashboard:${ADMIN_DASHBOARD_IMAGE_TAG:-latest}
+    container_name: auxdromos-admin-dashboard
+    ports:
+      - "${EXTERNAL_PORT:-8086}:${INTERNAL_PORT:-8086}"
+    environment:
+      SPRING_CLOUD_CONFIG_URI: "http://auxdromos-config:8888"
+      PROFILE: "${PROFILE:-pro}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-pro}"
+      SPRING_APPLICATION_NAME: "admin-dashboard"
+      JAVA_TOOL_OPTIONS: "-Xmx768m -XX:MaxRAMPercentage=75.0"
+      DB_URL: "${DB_URL}"
+      DB_USERNAME: "${DB_USERNAME}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+      COGNITO_CLIENT_SECRET: "${COGNITO_CLIENT_SECRET}"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - auxdromos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  auxdromos-network:
+    external: true

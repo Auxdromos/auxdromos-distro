@@ -5,11 +5,13 @@ on:
   push:
     branches:
       - main
+      - pro
       - develop
       - 'feature/**'
   pull_request:
     branches:
       - main
+      - pro
       - develop
 
 jobs:
@@ -22,6 +24,7 @@ jobs:
       actions: write
     with:
       java-version: '17'
-      artifact-retention-days: 7  # Imposta la soglia di età a 14 giorni
+      artifact-retention-days: 7
+      maven-profiles: ${{ github.ref_name == 'pro' && '-Ppro' || '-Psit' }}
     secrets:
       GITHUB_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}

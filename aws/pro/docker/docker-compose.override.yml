@@ -1,0 +1,33 @@
+version: '3.8'
+
+# Docker Compose override for AuxDromos PRO (Production) environment
+# Higher resource allocation compared to SIT (ActiveProcessorCount=2)
+
+services:
+  config:
+    command: >
+      bash -c "java -XX:ReservedCodeCacheSize=64M -Xss512K -XX:MaxMetaspaceSize=128M -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xmx512m -jar app.jar"
+
+  rdbms:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xmx768m -jar app.jar"
+
+  idp:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xmx768m -jar app.jar"
+
+  backend:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xmx1536m -jar app.jar"
+
+  gateway:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xmx768m -jar app.jar"
+
+  print-service:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xmx1536m -jar app.jar"
+
+  admin-dashboard:
+    command: >
+      bash -c "java -XX:MaxRAMPercentage=75.0 -XX:ActiveProcessorCount=2 -Xmx768m -jar app.jar"
