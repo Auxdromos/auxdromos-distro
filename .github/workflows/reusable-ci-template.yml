@@ -609,10 +609,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy Script
-        env:
-          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
-          EC2_USER: ${{ env.EC2_USER }}
-          EC2_HOST: ${{ env.EC2_HOST }}
+        # EC2_USER, EC2_HOST, S3_BUCKET_NAME already set in $GITHUB_ENV by fetch-secrets step
         run: |
           set -e
           echo "Deploying module $MODULE_NAME, versione $VERSION to $EC2_HOST (SIT)"
@@ -768,10 +765,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy Script
-        env:
-          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
-          EC2_USER: ${{ env.EC2_USER }}
-          EC2_HOST: ${{ env.EC2_HOST }}
+        # EC2_USER, EC2_HOST, S3_BUCKET_NAME already set in $GITHUB_ENV by fetch-secrets step
         run: |
           set -e
           echo "Deploying module $MODULE_NAME, versione $VERSION to $EC2_HOST (PRO)"
